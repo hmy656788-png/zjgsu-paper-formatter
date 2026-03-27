@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>浙江工商大学 · 学术论文自动排版工具</title>
+  <meta name="description" content="浙江工商大学学术论文自动排版工具。一键将未排版的 Word 论文转换为符合浙工商学术规范的格式文档。" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Inter:wght@300;400;500;600;700;800&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <!-- ====== 动态背景粒子 ====== -->
+  <div class="bg-particles" id="bgParticles"></div>
+
+  <!-- ====== 主容器 ====== -->
+  <div class="app-container">
+
+    <!-- ====== 顶部导航 ====== -->
+    <header class="app-header">
+      <div class="university-badge">
+        <img src="/static/logo.png" alt="浙江工商大学校徽" class="school-logo-img" />
+      </div>
+      <div class="logo">
+        <div class="logo-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/>
+            <line x1="16" y1="17" x2="8" y2="17"/>
+            <polyline points="10 9 9 9 8 9"/>
+          </svg>
+        </div>
+        <h1 class="logo-text">浙江工商大学<span>论文排版</span></h1>
+      </div>
+      <p class="header-subtitle">浙江工商大学学术论文自动排版系统</p>
+      <p class="header-tagline">上传 Word 文档 · 智能识别结构 · 一键生成校级规范格式</p>
+    </header>
+
+    <!-- ====== 主要内容区 ====== -->
+    <main class="main-content">
+
+      <!-- ====== 输入模式切换 ====== -->
+      <div class="input-tabs">
+        <button class="tab-btn active" id="tabUpload">上传文件</button>
+        <button class="tab-btn" id="tabPaste">黏贴文字</button>
+      </div>
+
+      <!-- ====== 黏贴区域 ====== -->
+      <section class="paste-section hidden" id="pasteSection">
+        <textarea id="pasteArea" class="paste-area" placeholder="请在此处黏贴未排版的论文文本内容..."></textarea>
+        <button class="btn-format" id="btnFormatText">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="4 7 4 4 20 4 20 7"/>
+            <line x1="9" y1="20" x2="15" y2="20"/>
+            <line x1="12" y1="4" x2="12" y2="20"/>
+          </svg>
+          一键排版并生成文档
+        </button>
+      </section>
+
+      <!-- ====== 上传区域 ====== -->
+      <section class="upload-section" id="uploadSection">
+        <div class="upload-zone" id="uploadZone">
+          <div class="upload-icon">
+            <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+          </div>
+          <h2 class="upload-title">拖拽文件到此处上传</h2>
+          <p class="upload-hint">点击此区域选择文件，或按 Ctrl+V 粘贴文件</p>
+          <p class="upload-format">支持格式：<strong>.docx</strong> · 最大 50MB</p>
+          <input type="file" id="fileInput" accept=".docx" hidden />
+        </div>
+      </section>
+
+      <!-- ====== 文件预览（上传后显示） ====== -->
+      <section class="file-preview hidden" id="filePreview">
+        <div class="file-card">
+          <div class="file-icon-wrapper">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+          </div>
+          <div class="file-info">
+            <p class="file-name" id="fileName">document.docx</p>
+            <p class="file-size" id="fileSize">1.2 MB</p>
+          </div>
+          <button class="file-remove" id="fileRemove" title="移除文件">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+
+        <button class="btn-format" id="btnFormat">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="4 7 4 4 20 4 20 7"/>
+            <line x1="9" y1="20" x2="15" y2="20"/>
+            <line x1="12" y1="4" x2="12" y2="20"/>
+          </svg>
+          开始排版
+        </button>
+      </section>
+
+      <!-- ====== 进度指示（处理中显示） ====== -->
+      <section class="processing-section hidden" id="processingSection">
+        <div class="processing-card">
+          <div class="spinner"></div>
+          <h3 class="processing-title">正在排版中...</h3>
+          <p class="processing-hint">智能识别论文结构，应用浙工商学术排版规范</p>
+          <div class="processing-steps">
+            <div class="step active" id="step1">
+              <div class="step-dot"></div>
+              <span>解析文档结构</span>
+            </div>
+            <div class="step" id="step2">
+              <div class="step-dot"></div>
+              <span>识别标题层级</span>
+            </div>
+            <div class="step" id="step3">
+              <div class="step-dot"></div>
+              <span>应用排版规则</span>
+            </div>
+            <div class="step" id="step4">
+              <div class="step-dot"></div>
+              <span>生成输出文档</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ====== 结果区域（排版完成后显示） ====== -->
+      <section class="result-section hidden" id="resultSection">
+        <div class="result-card">
+          <div class="result-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+              <polyline points="22 4 12 14.01 9 11.01"/>
+            </svg>
+          </div>
+          <h3 class="result-title">排版完成！</h3>
+
+          <div class="result-stats" id="resultStats">
+            <div class="stat-item">
+              <span class="stat-label">原始大小</span>
+              <span class="stat-value" id="statInputSize">—</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">输出大小</span>
+              <span class="stat-value" id="statOutputSize">—</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">耗时</span>
+              <span class="stat-value" id="statElapsed">—</span>
+            </div>
+          </div>
+
+          <button class="btn-download" id="btnDownload">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            下载排版文档
+          </button>
+
+          <button class="btn-reset" id="btnReset">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="1 4 1 10 7 10"/>
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+            </svg>
+            继续排版其他文档
+          </button>
+        </div>
+      </section>
+
+      <!-- ====== 错误提示 ====== -->
+      <section class="error-section hidden" id="errorSection">
+        <div class="error-card">
+          <div class="error-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="15" y1="9" x2="9" y2="15"/>
+              <line x1="9" y1="9" x2="15" y2="15"/>
+            </svg>
+          </div>
+          <h3 class="error-title">处理失败</h3>
+          <p class="error-message" id="errorMessage">未知错误</p>
+          <button class="btn-reset" id="btnRetry">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="1 4 1 10 7 10"/>
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+            </svg>
+            重新上传
+          </button>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- ====== 排版规则说明卡片 ====== -->
+    <section class="rules-section">
+      <h2 class="rules-title">浙工商论文排版规范</h2>
+      <div class="rules-grid">
+        <div class="rule-card">
+          <div class="rule-icon rule-icon-body">Aa</div>
+          <h3>正文格式</h3>
+          <p>宋体 / Times New Roman，小四号字，首行缩进 2 字符，1.5 倍行距</p>
+        </div>
+        <div class="rule-card">
+          <div class="rule-icon rule-icon-h1">H1</div>
+          <h3>一级标题</h3>
+          <p>黑体，三号字，加粗，居中对齐，段前段后 1 行间距</p>
+        </div>
+        <div class="rule-card">
+          <div class="rule-icon rule-icon-h2">H2</div>
+          <h3>二级标题</h3>
+          <p>黑体，四号字，加粗，左对齐，段前段后 0.5 行间距</p>
+        </div>
+        <div class="rule-card">
+          <div class="rule-icon rule-icon-fig">图</div>
+          <h3>图表标题</h3>
+          <p>黑体，五号字，居中对齐，取消首行缩进</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====== 页脚 ====== -->
+    <footer class="app-footer">
+      <p>浙江工商大学学术论文自动排版工具</p>
+      <p class="footer-sub">Zhejiang Gongshang University · 基于 python-docx 构建</p>
+      <div class="footer-signature" aria-label="作者签名">
+        <span class="sign-label">Made by</span>
+        <span class="sign-name">Ricardo</span>
+      </div>
+      <a href="https://github.com/hmy656788-png/zjgsu-paper-formatter" target="_blank" rel="noopener" class="footer-github">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        GitHub
+      </a>
+    </footer>
+
+  </div>
+
+  <script src="/static/script.js"></script>
+</body>
+</html>

@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file, send_from_directory
+from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 from format_paper import format_academic_paper, format_academic_paper_from_text
@@ -20,11 +21,13 @@ from format_paper import format_academic_paper, format_academic_paper_from_text
 # 应用配置
 # ============================================================
 app = Flask(__name__, static_folder="static", static_url_path="/static")
+CORS(app)  # 允许跨域请求（适应前后台分离的云部署架构）
 
-UPLOAD_FOLDER = Path(__file__).parent / "uploads"
-OUTPUT_FOLDER = Path(__file__).parent / "outputs"
-UPLOAD_FOLDER.mkdir(exist_ok=True)
-OUTPUT_FOLDER.mkdir(exist_ok=True)
+# 在 Serverless 环境中，通常只有 /tmp 目录有写入权限
+UPLOAD_FOLDER = Path("/tmp") / "uploads"
+OUTPUT_FOLDER = Path("/tmp") / "outputs"
+UPLOAD_FOLDER.mkdir(exist_ok=True, parents=True)
+OUTPUT_FOLDER.mkdir(exist_ok=True, parents=True)
 
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50MB 上传限制
 

@@ -82,6 +82,9 @@ RE_ABSTRACT = re.compile(r"^摘\s*要\s*[:：]?\s*")
 # --- 关键词标识匹配 ---
 # 匹配规则：段落起始处包含 "关键词" + 可选的标点符号
 RE_KEYWORDS = re.compile(r"^关\s*键\s*词\s*[:：]?\s*")
+RE_ENGLISH_ABSTRACT_HEADING = re.compile(r"^(?:英文摘要|abstract)\s*$", re.IGNORECASE)
+RE_ENGLISH_ABSTRACT = re.compile(r"^abstract\s*[:：]\s*", re.IGNORECASE)
+RE_ENGLISH_KEYWORDS = re.compile(r"^(?:keywords?|key\s*words?)\s*[:：]?\s*", re.IGNORECASE)
 RE_REFERENCES_HEADING = re.compile(r"^参\s*考\s*文\s*献\s*[:：]?\s*$")
 RE_SECTION_HEADING = re.compile(
     r"^(致谢|附录|作者简介|基金项目|英文摘要|abstract|acknowledg(?:e)?ments?)\s*$",
@@ -111,6 +114,7 @@ PAGE_LAYOUT = {
 DEFAULT_HEADER_TEXT = ""
 RUNNING_HEADER_MAX_LENGTH = 28
 CAPTION_MAX_LENGTH = 60
+MIN_TOC_HEADING_COUNT = 2
 COVER_INFO_FIELDS = [
     ("学院", "college"),
     ("教师", "teacher"),
@@ -161,6 +165,9 @@ class ParagraphType:
     REFERENCE_ENTRY = "reference_entry"        # 参考文献条目
     ABSTRACT = "abstract"            # 摘要段落
     KEYWORDS = "keywords"            # 关键词段落
+    ENGLISH_ABSTRACT_HEADING = "english_abstract_heading"  # 英文摘要标题
+    ENGLISH_ABSTRACT = "english_abstract"                  # 英文摘要正文
+    ENGLISH_KEYWORDS = "english_keywords"                  # 英文关键词
     BODY = "body"                    # 正文段落
 
 
@@ -194,11 +201,20 @@ def classify_paragraph(text: str) -> str:
         return ParagraphType.BODY  # 空段落当作正文处理
 
     # 优先匹配摘要和关键词
+    if RE_ENGLISH_ABSTRACT_HEADING.match(stripped):
+        return ParagraphType.ENGLISH_ABSTRACT_HEADING
+
     if RE_ABSTRACT.match(stripped):
         return ParagraphType.ABSTRACT
 
     if RE_KEYWORDS.match(stripped):
         return ParagraphType.KEYWORDS
+
+    if RE_ENGLISH_ABSTRACT.match(stripped):
+        return ParagraphType.ENGLISH_ABSTRACT
+
+    if RE_ENGLISH_KEYWORDS.match(stripped):
+        return ParagraphType.ENGLISH_KEYWORDS
 
     if RE_REFERENCES_HEADING.match(stripped):
         return ParagraphType.REFERENCES_HEADING
@@ -331,7 +347,13 @@ def find_title_paragraph_index(paragraphs) -> int | None:
 
         for _, text in non_empty[candidate_position + 1:candidate_position + 4]:
             para_type = classify_paragraph(text)
-            if para_type in {ParagraphType.ABSTRACT, ParagraphType.KEYWORDS}:
+            if para_type in {
+                ParagraphType.ABSTRACT,
+                ParagraphType.KEYWORDS,
+                ParagraphType.ENGLISH_ABSTRACT_HEADING,
+                ParagraphType.ENGLISH_ABSTRACT,
+                ParagraphType.ENGLISH_KEYWORDS,
+            }:
                 return candidate_index
 
             if para_type in {
@@ -428,6 +450,15 @@ def iter_table_paragraphs(tables):
                 yield from iter_table_paragraphs(cell.tables)
 
 
+def iter_all_tables(tables):
+    """递归遍历文档中的所有表格（含嵌套表格）。"""
+    for table in tables:
+        yield table
+        for row in table.rows:
+            for cell in row.cells:
+                yield from iter_all_tables(cell.tables)
+
+
 def _has_drawing(paragraph) -> bool:
     """判断段落中是否包含图片等 drawing 元素。"""
     return bool(paragraph._element.findall(".//" + qn("w:drawing")))
@@ -476,6 +507,23 @@ def _set_paragraph_format(
 
     if line_spacing_rule is not None:
         pf.line_spacing_rule = line_spacing_rule
+
+
+def _set_paragraph_outline_level(paragraph, level: int | None):
+    """为段落设置目录级别，便于 Word TOC 字段收录。"""
+    p_pr = paragraph._element.get_or_add_pPr()
+    outline_level = p_pr.find(qn("w:outlineLvl"))
+
+    if level is None:
+        if outline_level is not None:
+            p_pr.remove(outline_level)
+        return
+
+    if outline_level is None:
+        outline_level = OxmlElement("w:outlineLvl")
+        p_pr.append(outline_level)
+
+    outline_level.set(qn("w:val"), str(level))
 
 
 def _clear_paragraph_style(paragraph, preserve_list_style: bool = False):
@@ -633,6 +681,53 @@ def _set_cell_only_bottom_border(cell, color: str = "000000", size: str = "8"):
     )
 
 
+def _set_cell_horizontal_borders(cell, *, top: bool = False, bottom: bool = False, color: str = "000000", size: str = "8"):
+    """仅保留单元格的上/下边框，用于三线表。"""
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tc_borders = tc_pr.find(qn("w:tcBorders"))
+    if tc_borders is None:
+        tc_borders = OxmlElement("w:tcBorders")
+        tc_pr.append(tc_borders)
+
+    hidden = _hidden_border_attrs()
+    visible = {
+        "val": "single",
+        "sz": size,
+        "space": "0",
+        "color": color,
+    }
+    _set_xml_borders(
+        tc_borders,
+        {
+            "top": visible if top else hidden,
+            "left": hidden,
+            "right": hidden,
+            "bottom": visible if bottom else hidden,
+        },
+    )
+
+
+def format_three_line_table(table):
+    """将普通表格处理为学术论文常见的三线表边框。"""
+    rows = list(table.rows)
+    if not rows:
+        return
+
+    _hide_table_borders(table)
+    last_row_index = len(rows) - 1
+
+    for row_index, row in enumerate(rows):
+        is_header_row = row_index == 0
+        is_last_row = row_index == last_row_index
+        for cell in row.cells:
+            _set_cell_horizontal_borders(
+                cell,
+                top=is_header_row,
+                bottom=is_header_row or is_last_row,
+                size="10",
+            )
+
+
 def _set_paragraph_only_bottom_border(paragraph, color: str = "000000", size: str = "10"):
     """
     给段落仅保留一条下边框。
@@ -675,6 +770,16 @@ def _prepend_block_elements(doc, elements):
     for insert_index, element in enumerate(elements):
         body.remove(element)
         body.insert(insert_index, element)
+
+
+def _insert_block_elements_after(paragraph, elements):
+    """将一组 block 元素插入到指定段落之后。"""
+    parent = paragraph._element.getparent()
+    insert_index = parent.index(paragraph._element) + 1
+
+    for offset, element in enumerate(elements):
+        element.getparent().remove(element)
+        parent.insert(insert_index + offset, element)
 
 
 def _resolve_cover_asset_path(explicit_path, asset_key: str) -> Path | None:
@@ -729,6 +834,88 @@ def _append_page_number_field(paragraph):
     run_end = paragraph.add_run()
     _set_run_font(run_end, cn_font="宋体", en_font="Times New Roman", size_pt=size_pt)
     run_end._r.append(fld_char_end)
+
+
+def get_max_printable_width(doc) -> int:
+    """返回文档各节中可打印区域的最小宽度（EMU）。"""
+    widths = []
+    for section in doc.sections:
+        printable_width = int(section.page_width) - int(section.left_margin) - int(section.right_margin)
+        if printable_width > 0:
+            widths.append(printable_width)
+
+    return min(widths) if widths else 0
+
+
+def constrain_inline_images(doc) -> int:
+    """
+    检测文档中的内嵌图片，若超出页面可打印宽度则按比例缩小。
+
+    这里只处理 inline_shapes：
+    - 对当前项目已经覆盖的“插入式图片”最有效
+    - 与 python-docx 的能力边界一致，兼容性相对稳定
+    """
+    max_width = get_max_printable_width(doc)
+    if max_width <= 0:
+        return 0
+
+    resized_count = 0
+    for shape in doc.inline_shapes:
+        original_width = int(shape.width)
+        original_height = int(shape.height)
+        if original_width <= 0 or original_height <= 0 or original_width <= max_width:
+            continue
+
+        scale = max_width / original_width
+        shape.width = max_width
+        shape.height = max(1, int(round(original_height * scale)))
+        resized_count += 1
+
+    return resized_count
+
+
+def _append_toc_field(paragraph):
+    """插入 Word 目录域，打开文档更新域后即可生成目录。"""
+    size_pt = 12
+
+    fld_char_begin = OxmlElement("w:fldChar")
+    fld_char_begin.set(qn("w:fldCharType"), "begin")
+    run_begin = paragraph.add_run()
+    _set_run_font(run_begin, cn_font="宋体", en_font="Times New Roman", size_pt=size_pt)
+    run_begin._r.append(fld_char_begin)
+
+    instr_text = OxmlElement("w:instrText")
+    instr_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    instr_text.text = 'TOC \\o "1-3" \\h \\z \\u'
+    run_instr = paragraph.add_run()
+    _set_run_font(run_instr, cn_font="宋体", en_font="Times New Roman", size_pt=size_pt)
+    run_instr._r.append(instr_text)
+
+    fld_char_separate = OxmlElement("w:fldChar")
+    fld_char_separate.set(qn("w:fldCharType"), "separate")
+    run_separate = paragraph.add_run()
+    _set_run_font(run_separate, cn_font="宋体", en_font="Times New Roman", size_pt=size_pt)
+    run_separate._r.append(fld_char_separate)
+
+    placeholder = paragraph.add_run("目录将在打开文档后自动生成，可右键更新目录立即刷新。")
+    _set_run_font(placeholder, cn_font="宋体", en_font="Times New Roman", size_pt=size_pt)
+
+    fld_char_end = OxmlElement("w:fldChar")
+    fld_char_end.set(qn("w:fldCharType"), "end")
+    run_end = paragraph.add_run()
+    _set_run_font(run_end, cn_font="宋体", en_font="Times New Roman", size_pt=size_pt)
+    run_end._r.append(fld_char_end)
+
+
+def _enable_field_updates_on_open(doc):
+    """提示 Word/WPS 在打开文档时更新域代码。"""
+    settings_element = doc.settings.element
+    update_fields = settings_element.find(qn("w:updateFields"))
+    if update_fields is None:
+        update_fields = OxmlElement("w:updateFields")
+        settings_element.append(update_fields)
+
+    update_fields.set(qn("w:val"), "true")
 
 
 def apply_document_layout(doc, header_text: str) -> dict:
@@ -986,6 +1173,61 @@ def generate_cover_page(doc, info_dict):
     return True
 
 
+def insert_table_of_contents(doc, title_index: int | None, heading_count: int) -> bool:
+    """在标题后插入目录标题、TOC 域和分页符。"""
+    if title_index is None or heading_count < MIN_TOC_HEADING_COUNT:
+        return False
+
+    title_paragraph = doc.paragraphs[title_index]
+    new_blocks = []
+
+    toc_heading = doc.add_paragraph()
+    _clear_paragraph_style(toc_heading)
+    _replace_paragraph_text(toc_heading, "目录")
+    _set_paragraph_format(
+        toc_heading,
+        alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        first_line_indent=Pt(0),
+        space_before=Pt(16),
+        space_after=Pt(12),
+        line_spacing=1.5,
+        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+    )
+    _set_paragraph_outline_level(toc_heading, None)
+    _apply_run_fonts(toc_heading, cn_font="黑体", en_font="Times New Roman", size_pt=16, bold=True)
+    new_blocks.append(toc_heading._element)
+
+    toc_paragraph = doc.add_paragraph()
+    _clear_paragraph_style(toc_paragraph)
+    _set_paragraph_format(
+        toc_paragraph,
+        alignment=WD_ALIGN_PARAGRAPH.LEFT,
+        first_line_indent=Pt(0),
+        line_spacing=1.5,
+        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+    )
+    _set_paragraph_outline_level(toc_paragraph, None)
+    _append_toc_field(toc_paragraph)
+    new_blocks.append(toc_paragraph._element)
+
+    page_break = doc.add_paragraph()
+    _clear_paragraph_style(page_break)
+    _set_paragraph_format(
+        page_break,
+        alignment=WD_ALIGN_PARAGRAPH.LEFT,
+        first_line_indent=Pt(0),
+        line_spacing=1.0,
+        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+    )
+    _set_paragraph_outline_level(page_break, None)
+    page_break.add_run().add_break(WD_BREAK.PAGE)
+    new_blocks.append(page_break._element)
+
+    _insert_block_elements_after(title_paragraph, new_blocks)
+    _enable_field_updates_on_open(doc)
+    return True
+
+
 # ============================================================
 # 各类型段落的格式化函数
 # ============================================================
@@ -999,6 +1241,7 @@ def format_body(paragraph, in_table: bool = False):
       - 行距：1.5 倍行距
     """
     normalized_text = normalize_text_for_matching(paragraph.text)
+    _set_paragraph_outline_level(paragraph, None)
 
     if _has_drawing(paragraph) and not normalized_text:
         _set_paragraph_format(
@@ -1047,11 +1290,12 @@ def format_title(paragraph, text_override: str | None = None):
         line_spacing=1.5,
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
+    _set_paragraph_outline_level(paragraph, None)
 
     _apply_run_fonts(paragraph, cn_font="黑体", en_font="Times New Roman", size_pt=18, bold=True)
 
 
-def format_heading_l1(paragraph, text_override: str | None = None):
+def format_heading_l1(paragraph, text_override: str | None = None, outline_level: int | None = 0):
     """
     一级标题格式：
       - 字体：黑体
@@ -1072,6 +1316,7 @@ def format_heading_l1(paragraph, text_override: str | None = None):
         line_spacing=1.5,
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
+    _set_paragraph_outline_level(paragraph, outline_level)
 
     _apply_run_fonts(paragraph, cn_font="黑体", en_font="Times New Roman", size_pt=16, bold=True)
 
@@ -1097,6 +1342,7 @@ def format_heading_l2(paragraph, text_override: str | None = None):
         line_spacing=1.5,
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
+    _set_paragraph_outline_level(paragraph, 1)
 
     _apply_run_fonts(paragraph, cn_font="黑体", en_font="Times New Roman", size_pt=14, bold=True)
 
@@ -1122,6 +1368,7 @@ def format_heading_l3(paragraph, text_override: str | None = None):
         line_spacing=1.5,
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
+    _set_paragraph_outline_level(paragraph, 2)
 
     _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12, bold=True)
 
@@ -1144,6 +1391,7 @@ def format_figure_table(paragraph, text_override: str | None = None):
         line_spacing=1.5,
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
+    _set_paragraph_outline_level(paragraph, None)
 
     _apply_run_fonts(paragraph, cn_font="黑体", en_font="Times New Roman", size_pt=10.5)
 
@@ -1171,8 +1419,52 @@ def format_references_heading(paragraph, text_override: str | None = None):
         line_spacing=1.0,
         line_spacing_rule=WD_LINE_SPACING.SINGLE,
     )
+    _set_paragraph_outline_level(paragraph, None)
 
     _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12, bold=True)
+
+
+def _format_labeled_paragraph(
+    paragraph,
+    label_pattern: re.Pattern,
+    *,
+    cn_font: str,
+    en_font: str,
+    size_pt: float,
+    alignment,
+    first_line_indent,
+    label_text_override: str | None = None,
+):
+    """按“标签 + 正文”结构重建段落，并统一字体与加粗规则。"""
+    _clear_paragraph_style(paragraph)
+    _set_paragraph_outline_level(paragraph, None)
+    _set_paragraph_format(
+        paragraph,
+        alignment=alignment,
+        first_line_indent=first_line_indent,
+        line_spacing=1.5,
+        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+    )
+
+    full_text = paragraph.text
+    match = label_pattern.match(full_text)
+
+    if match:
+        label_end = match.end()
+        label_text = label_text_override if label_text_override is not None else full_text[:label_end]
+        body_text = full_text[label_end:]
+
+        _remove_all_runs(paragraph)
+
+        run_label = paragraph.add_run(label_text)
+        _set_run_font(run_label, cn_font=cn_font, en_font=en_font, size_pt=size_pt, bold=True)
+
+        if body_text:
+            run_body = paragraph.add_run(body_text)
+            _set_run_font(run_body, cn_font=cn_font, en_font=en_font, size_pt=size_pt, bold=False)
+        return
+
+    _apply_run_fonts(paragraph, cn_font=cn_font, en_font=en_font, size_pt=size_pt)
 
 
 def format_abstract_or_keywords(paragraph, label_pattern: re.Pattern):
@@ -1191,42 +1483,72 @@ def format_abstract_or_keywords(paragraph, label_pattern: re.Pattern):
         paragraph:     docx Paragraph 对象
         label_pattern: 用于匹配标签的正则表达式
     """
+    _format_labeled_paragraph(
+        paragraph,
+        label_pattern,
+        cn_font="宋体",
+        en_font="Times New Roman",
+        size_pt=12,
+        alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
+        first_line_indent=Pt(24),
+    )
+
+def format_english_abstract_heading(paragraph):
+    """英文摘要标题格式：居中、Times New Roman、12pt、加粗。"""
     _clear_paragraph_style(paragraph)
+    _replace_paragraph_text(paragraph, "Abstract")
+    _set_paragraph_format(
+        paragraph,
+        alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        first_line_indent=Pt(0),
+        space_before=Pt(12),
+        space_after=Pt(12),
+        line_spacing=1.0,
+        line_spacing_rule=WD_LINE_SPACING.SINGLE,
+    )
+    _set_paragraph_outline_level(paragraph, None)
+    _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12, bold=True)
+
+
+def format_english_abstract(paragraph, label_pattern: re.Pattern | None = None):
+    """英文摘要正文：Times New Roman、12pt、1.5 倍行距，不额外首行缩进。"""
+    if label_pattern is not None:
+        _format_labeled_paragraph(
+            paragraph,
+            label_pattern,
+            cn_font="宋体",
+            en_font="Times New Roman",
+            size_pt=12,
+            alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
+            first_line_indent=Pt(0),
+            label_text_override="Abstract: ",
+        )
+        return
+
+    _clear_paragraph_style(paragraph)
+    _set_paragraph_outline_level(paragraph, None)
     _set_paragraph_format(
         paragraph,
         alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
-        first_line_indent=Pt(24),
+        first_line_indent=Pt(0),
         line_spacing=1.5,
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
+    _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
 
-    # 拼接所有 run 的文本内容
-    full_text = paragraph.text
-    match = label_pattern.match(full_text)
 
-    if match:
-        label_end = match.end()  # 标签部分的字符偏移量
-
-        # ---------- 策略：清空所有旧 run，重新创建两个 run ----------
-        # 保存文本
-        label_text = full_text[:label_end]
-        body_text = full_text[label_end:]
-
-        # 清除段落中所有已有的 run
-        for run in paragraph.runs:
-            run._element.getparent().remove(run._element)
-
-        # 创建标签 run（加粗）
-        run_label = paragraph.add_run(label_text)
-        _set_run_font(run_label, cn_font="宋体", en_font="Times New Roman", size_pt=12, bold=True)
-
-        # 创建正文 run（不加粗）
-        if body_text:
-            run_body = paragraph.add_run(body_text)
-            _set_run_font(run_body, cn_font="宋体", en_font="Times New Roman", size_pt=12, bold=False)
-    else:
-        # 无法匹配标签时，整体按正文格式处理
-        _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
+def format_english_keywords(paragraph):
+    """英文关键词：标签加粗、正文常规，整体左对齐。"""
+    _format_labeled_paragraph(
+        paragraph,
+        RE_ENGLISH_KEYWORDS,
+        cn_font="宋体",
+        en_font="Times New Roman",
+        size_pt=12,
+        alignment=WD_ALIGN_PARAGRAPH.LEFT,
+        first_line_indent=Pt(0),
+        label_text_override="Keywords: ",
+    )
 
 
 def format_reference_entry(paragraph):
@@ -1247,6 +1569,7 @@ def format_reference_entry(paragraph):
         line_spacing=1.0,
         line_spacing_rule=WD_LINE_SPACING.SINGLE,
     )
+    _set_paragraph_outline_level(paragraph, None)
     paragraph.paragraph_format.left_indent = Pt(0)
     paragraph.paragraph_format.right_indent = Pt(0)
 
@@ -1360,6 +1683,9 @@ def _process_document(doc, output_path: str) -> dict | bool:
         ParagraphType.REFERENCE_ENTRY: 0,
         ParagraphType.ABSTRACT: 0,
         ParagraphType.KEYWORDS: 0,
+        ParagraphType.ENGLISH_ABSTRACT_HEADING: 0,
+        ParagraphType.ENGLISH_ABSTRACT: 0,
+        ParagraphType.ENGLISH_KEYWORDS: 0,
         ParagraphType.BODY: 0,
     }
 
@@ -1371,6 +1697,7 @@ def _process_document(doc, output_path: str) -> dict | bool:
     page_setup = apply_document_layout(doc, title_text)
     outline = []
     in_references = False
+    in_english_abstract = False
     figure_counter = 0
     table_counter = 0
 
@@ -1394,6 +1721,27 @@ def _process_document(doc, output_path: str) -> dict | bool:
                 para_type = ParagraphType.REFERENCE_ENTRY
             else:
                 in_references = False
+
+        if para_type in {ParagraphType.ENGLISH_ABSTRACT_HEADING, ParagraphType.ENGLISH_ABSTRACT}:
+            in_english_abstract = True
+        elif in_english_abstract and text:
+            if para_type == ParagraphType.ENGLISH_KEYWORDS:
+                in_english_abstract = False
+            elif para_type in {
+                ParagraphType.TITLE,
+                ParagraphType.HEADING_L1,
+                ParagraphType.HEADING_L2,
+                ParagraphType.HEADING_L3,
+                ParagraphType.FIGURE_CAPTION,
+                ParagraphType.TABLE_CAPTION,
+                ParagraphType.SECTION_HEADING,
+                ParagraphType.REFERENCES_HEADING,
+                ParagraphType.ABSTRACT,
+                ParagraphType.KEYWORDS,
+            }:
+                in_english_abstract = False
+            else:
+                para_type = ParagraphType.ENGLISH_ABSTRACT
 
         stats[para_type] += 1
         _append_outline_entry(outline, para_type, text)
@@ -1430,7 +1778,7 @@ def _process_document(doc, output_path: str) -> dict | bool:
 
         elif para_type == ParagraphType.SECTION_HEADING:
             logger.info(f"  [非编号章节标题] 第{i+1}段: \"{text}\"")
-            format_heading_l1(paragraph, text_override=text)
+            format_heading_l1(paragraph, text_override=text, outline_level=None)
 
         elif para_type == ParagraphType.REFERENCES_HEADING:
             logger.info(f"  [参考文献标题] 第{i+1}段: \"{text}\"")
@@ -1448,6 +1796,21 @@ def _process_document(doc, output_path: str) -> dict | bool:
             logger.info(f"  [关键词段] 第{i+1}段: \"{text[:30]}...\"")
             format_abstract_or_keywords(paragraph, RE_KEYWORDS)
 
+        elif para_type == ParagraphType.ENGLISH_ABSTRACT_HEADING:
+            logger.info(f"  [英文摘要标题] 第{i+1}段: \"{text}\"")
+            format_english_abstract_heading(paragraph)
+
+        elif para_type == ParagraphType.ENGLISH_ABSTRACT:
+            logger.info(f"  [英文摘要] 第{i+1}段: \"{text[:30]}...\"")
+            if RE_ENGLISH_ABSTRACT.match(text):
+                format_english_abstract(paragraph, RE_ENGLISH_ABSTRACT)
+            else:
+                format_english_abstract(paragraph)
+
+        elif para_type == ParagraphType.ENGLISH_KEYWORDS:
+            logger.info(f"  [英文关键词] 第{i+1}段: \"{text[:30]}...\"")
+            format_english_keywords(paragraph)
+
         else:
             # 正文段落（含空段落）
             format_body(paragraph)
@@ -1457,6 +1820,17 @@ def _process_document(doc, output_path: str) -> dict | bool:
     for paragraph in iter_table_paragraphs(doc.tables):
         table_paragraph_count += 1
         format_body(paragraph, in_table=True)
+
+    for table in iter_all_tables(doc.tables):
+        format_three_line_table(table)
+
+    heading_count = (
+        stats[ParagraphType.HEADING_L1]
+        + stats[ParagraphType.HEADING_L2]
+        + stats[ParagraphType.HEADING_L3]
+    )
+    insert_table_of_contents(doc, title_index, heading_count)
+    resized_image_count = constrain_inline_images(doc)
 
     # ---------- 6. 保存输出文档 ----------
     try:
@@ -1482,8 +1856,12 @@ def _process_document(doc, output_path: str) -> dict | bool:
     logger.info(f"  参考文献条目：{stats[ParagraphType.REFERENCE_ENTRY]} 条")
     logger.info(f"  摘要段落：{stats[ParagraphType.ABSTRACT]} 个")
     logger.info(f"  关键词段：{stats[ParagraphType.KEYWORDS]} 个")
+    logger.info(f"  英文摘要标题：{stats[ParagraphType.ENGLISH_ABSTRACT_HEADING]} 个")
+    logger.info(f"  英文摘要段落：{stats[ParagraphType.ENGLISH_ABSTRACT]} 个")
+    logger.info(f"  英文关键词：{stats[ParagraphType.ENGLISH_KEYWORDS]} 个")
     logger.info(f"  正文段落：{stats[ParagraphType.BODY]} 个")
     logger.info(f"  表格内段落：{table_paragraph_count} 个")
+    logger.info(f"  自动缩放图片：{resized_image_count} 张")
     logger.info("=" * 50)
 
     return {
@@ -1491,6 +1869,7 @@ def _process_document(doc, output_path: str) -> dict | bool:
         "title_text": title_text,
         "page_setup": page_setup,
         "table_paragraphs": table_paragraph_count,
+        "resized_images": resized_image_count,
         "outline": outline,
     }
 

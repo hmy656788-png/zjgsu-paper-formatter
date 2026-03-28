@@ -72,6 +72,14 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
 
         self.assertIsNone(find_title_paragraph_index(doc.paragraphs))
 
+    def test_find_title_paragraph_index_accepts_english_abstract_heading(self):
+        doc = Document()
+        doc.add_paragraph("跨境电商场景下供应链韧性研究")
+        doc.add_paragraph("Abstract")
+        doc.add_paragraph("This paper studies supply chain resilience.")
+
+        self.assertEqual(find_title_paragraph_index(doc.paragraphs), 0)
+
     def test_format_academic_paper_from_text_formats_detected_title(self):
         text = "基于多元回归模型的城市化研究\n摘要：这是摘要内容\n关键词：城市化 回归\n1 引言\n正文内容"
 
@@ -143,14 +151,24 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertTrue(any(item["level"] == "references" for item in summary["outline"]))
 
             doc = Document(str(output_path))
-            heading_l3 = doc.paragraphs[5]
-            references_heading = doc.paragraphs[7]
-            reference_entry = doc.paragraphs[8]
+            heading_l3 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "1.1.1 研究假设")
+            references_heading = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "参考文献：")
+            reference_entry = next(paragraph for paragraph in doc.paragraphs if paragraph.text.startswith("[1] 张三."))
+            toc_heading = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "目录")
+            toc_field = next(
+                paragraph for paragraph in doc.paragraphs
+                if 'TOC \\o "1-3" \\h \\z \\u' in paragraph._element.xml
+            )
+            toc_page_break = next(
+                paragraph for paragraph in doc.paragraphs
+                if 'w:type="page"' in paragraph._element.xml
+            )
 
             self.assertEqual(heading_l3.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
             self.assertTrue(heading_l3.runs[0].font.bold)
             self.assertEqual(heading_l3.runs[0].font.size.pt, 12.0)
             self.assertEqual(heading_l3.paragraph_format.first_line_indent.pt, 0.0)
+            self.assertEqual(heading_l3._element.pPr.find(qn("w:outlineLvl")).get(qn("w:val")), "2")
 
             self.assertEqual(references_heading.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
             self.assertEqual(references_heading.text, "参考文献：")
@@ -160,6 +178,10 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertAlmostEqual(reference_entry.paragraph_format.first_line_indent.pt, 21.0, places=1)
             self.assertEqual(reference_entry.paragraph_format.line_spacing, 1.0)
             self.assertEqual(reference_entry.runs[0].font.size.pt, 10.0)
+            self.assertEqual(toc_heading.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+            self.assertIn('TOC \\o "1-3" \\h \\z \\u', toc_field._element.xml)
+            self.assertIn('w:type="page"', toc_page_break._element.xml)
+            self.assertIn("w:updateFields", doc.settings.element.xml)
         finally:
             output_path.unlink(missing_ok=True)
 
@@ -214,6 +236,49 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
 
             doc = Document(str(output_path))
             self.assertEqual(doc.sections[0].header.paragraphs[0].text, summary["page_setup"]["header_text"])
+        finally:
+            output_path.unlink(missing_ok=True)
+
+    def test_format_academic_paper_from_text_formats_english_abstract_keywords(self):
+        text = (
+            "跨境电商场景下供应链韧性研究\n"
+            "Abstract\n"
+            "This paper studies supply chain resilience under cross-border e-commerce settings.\n"
+            "Keywords: supply chain resilience; cross-border e-commerce\n"
+            "1 Introduction\n"
+            "正文内容"
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            output_path = Path(handle.name)
+
+        try:
+            summary = format_academic_paper_from_text(text, str(output_path))
+
+            self.assertIsInstance(summary, dict)
+            self.assertEqual(summary["stats"]["english_abstract_heading"], 1)
+            self.assertEqual(summary["stats"]["english_abstract"], 1)
+            self.assertEqual(summary["stats"]["english_keywords"], 1)
+
+            doc = Document(str(output_path))
+            abstract_heading = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "Abstract")
+            abstract_body = next(
+                paragraph for paragraph in doc.paragraphs
+                if paragraph.text.startswith("This paper studies supply chain resilience")
+            )
+            keywords = next(paragraph for paragraph in doc.paragraphs if paragraph.text.startswith("Keywords:"))
+
+            self.assertEqual(abstract_heading.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+            self.assertTrue(abstract_heading.runs[0].font.bold)
+            self.assertEqual(abstract_heading.runs[0].font.size.pt, 12.0)
+
+            self.assertEqual(abstract_body.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+            self.assertEqual(abstract_body.paragraph_format.first_line_indent.pt, 0.0)
+            self.assertEqual(abstract_body.runs[0].font.size.pt, 12.0)
+
+            self.assertEqual(keywords.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
+            self.assertTrue(keywords.runs[0].font.bold)
+            self.assertEqual(keywords.text, "Keywords: supply chain resilience; cross-border e-commerce")
         finally:
             output_path.unlink(missing_ok=True)
 
@@ -289,6 +354,55 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertAlmostEqual(reference_entry.paragraph_format.first_line_indent.pt, 21.0, places=1)
             self.assertEqual(reference_entry.paragraph_format.line_spacing, 1.0)
             self.assertEqual(reference_entry.runs[0].font.size.pt, 10.0)
+
+            top_left_borders = output_doc.tables[0].cell(0, 0)._tc.tcPr.find(qn("w:tcBorders"))
+            bottom_left_borders = output_doc.tables[0].cell(1, 0)._tc.tcPr.find(qn("w:tcBorders"))
+            self.assertEqual(top_left_borders.find(qn("w:top")).get(qn("w:val")), "single")
+            self.assertEqual(top_left_borders.find(qn("w:bottom")).get(qn("w:val")), "single")
+            self.assertEqual(top_left_borders.find(qn("w:left")).get(qn("w:val")), "none")
+            self.assertEqual(bottom_left_borders.find(qn("w:top")).get(qn("w:val")), "none")
+            self.assertEqual(bottom_left_borders.find(qn("w:bottom")).get(qn("w:val")), "single")
+
+    def test_format_academic_paper_scales_oversized_images_to_page_width(self):
+        tiny_png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9VE3d2wAAAAASUVORK5CYII="
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            image_path = temp_path / "oversized.png"
+            input_path = temp_path / "oversized_input.docx"
+            output_path = temp_path / "oversized_output.docx"
+            image_path.write_bytes(tiny_png)
+
+            doc = Document()
+            doc.add_paragraph("超宽图片版式测试")
+            doc.add_paragraph("摘要：这是摘要内容。")
+            doc.add_paragraph("关键词：图片 缩放 测试")
+
+            picture = doc.add_paragraph()
+            picture.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            picture.add_run().add_picture(str(image_path), width=Inches(8))
+            doc.add_paragraph("图 1 超宽测试图")
+            doc.save(str(input_path))
+
+            summary = format_academic_paper(str(input_path), str(output_path))
+            self.assertIsInstance(summary, dict)
+            self.assertEqual(summary["resized_images"], 1)
+
+            output_doc = Document(str(output_path))
+            self.assertEqual(len(output_doc.inline_shapes), 1)
+
+            printable_width = (
+                int(output_doc.sections[0].page_width)
+                - int(output_doc.sections[0].left_margin)
+                - int(output_doc.sections[0].right_margin)
+            )
+            resized_shape = output_doc.inline_shapes[0]
+
+            self.assertLessEqual(int(resized_shape.width), printable_width)
+            self.assertEqual(int(resized_shape.width), int(resized_shape.height))
+            self.assertLess(int(resized_shape.width), int(Inches(8)))
 
     def test_generate_cover_page_inserts_cover_table_and_page_break(self):
         info_dict = {

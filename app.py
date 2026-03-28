@@ -157,12 +157,14 @@ def build_preview(summary: dict) -> dict:
     structure_bits = []
     for key, label, unit in (
         (ParagraphType.TITLE, "论文标题", "个"),
+        (ParagraphType.ENGLISH_ABSTRACT_HEADING, "英文摘要", "个"),
         (ParagraphType.HEADING_L1, "一级标题", "个"),
         (ParagraphType.HEADING_L2, "二级标题", "个"),
         (ParagraphType.HEADING_L3, "三级标题", "个"),
         (ParagraphType.FIGURE_CAPTION, "图标题", "个"),
         (ParagraphType.TABLE_CAPTION, "表标题", "个"),
         (ParagraphType.SECTION_HEADING, "非编号章节", "个"),
+        (ParagraphType.REFERENCES_HEADING, "参考文献标题", "个"),
     ):
         count = stats.get(key, 0)
         if count:

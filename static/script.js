@@ -39,7 +39,20 @@
   const statInputSize = $("#statInputSize");
   const statOutputSize = $("#statOutputSize");
   const statElapsed = $("#statElapsed");
+  const previewHighlights = $("#previewHighlights");
+  const previewOutline = $("#previewOutline");
   const steps = [$("#step1"), $("#step2"), $("#step3"), $("#step4")];
+
+  const outlineLevelLabels = {
+    title: "论文标题",
+    h1: "一级标题",
+    h2: "二级标题",
+    h3: "三级标题",
+    section: "章节标题",
+    references: "参考文献",
+    english_abstract_heading: "英文摘要",
+    abstract: "摘要",
+  };
 
   let selectedFile = null;
   let selectedCover = null;
@@ -113,6 +126,79 @@
 
   function showPreview() { updateRetryLabel(); showSection(filePreview); }
 
+  function createEmptyPreviewMessage(text) {
+    const empty = document.createElement("p");
+    empty.className = "preview-empty";
+    empty.textContent = text;
+    return empty;
+  }
+
+  function renderPreview(preview) {
+    if (!previewHighlights || !previewOutline) return;
+
+    previewHighlights.textContent = "";
+    previewOutline.textContent = "";
+
+    const highlights = Array.isArray(preview && preview.highlights) ? preview.highlights : [];
+    const outline = Array.isArray(preview && preview.outline) ? preview.outline : [];
+
+    if (!highlights.length) {
+      previewHighlights.appendChild(createEmptyPreviewMessage("这次排版已经完成，但暂时没有可展示的预览摘要。"));
+    } else {
+      highlights.forEach((item) => {
+        const card = document.createElement("article");
+        card.className = "preview-item";
+
+        const eyebrow = document.createElement("span");
+        eyebrow.className = "preview-item-eyebrow";
+        eyebrow.textContent = item.eyebrow || "排版动作";
+
+        const title = document.createElement("h5");
+        title.className = "preview-item-title";
+        title.textContent = item.title || "已完成自动处理";
+
+        const description = document.createElement("p");
+        description.className = "preview-item-desc";
+        description.textContent = item.description || "";
+
+        card.appendChild(eyebrow);
+        card.appendChild(title);
+        card.appendChild(description);
+        previewHighlights.appendChild(card);
+      });
+    }
+
+    if (!outline.length) {
+      previewOutline.appendChild(createEmptyPreviewMessage("这份文档没有识别到可展示的标题结构，正文仍已完成统一排版。"));
+      return;
+    }
+
+    const list = document.createElement("div");
+    list.className = "outline-list";
+
+    outline.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "outline-item";
+      if (item.level) {
+        row.dataset.level = item.level;
+      }
+
+      const label = document.createElement("span");
+      label.className = "outline-level";
+      label.textContent = outlineLevelLabels[item.level] || "结构";
+
+      const text = document.createElement("span");
+      text.className = "outline-text";
+      text.textContent = item.text || "";
+
+      row.appendChild(label);
+      row.appendChild(text);
+      list.appendChild(row);
+    });
+
+    previewOutline.appendChild(list);
+  }
+
   function showProcessing() {
     stopResultReveal(); showSection(processingSection);
     resetSteps(); steps[0].classList.add("active"); animateSteps();
@@ -125,6 +211,9 @@
     statElapsed.textContent = data.stats.elapsed;
     downloadUrl = data.download_url + "?name=" + encodeURIComponent(data.download_name);
     downloadName = data.download_name;
+    if (data.summary) {
+      renderPreview(data.summary);
+    }
   }
 
   function showError(msg) { stopResultReveal(); stopStepAnimation(); showSection(errorSection); errorMessage.textContent = msg; }

@@ -430,11 +430,12 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             output_doc = Document(str(output_path))
 
             self.assertEqual(output_doc.paragraphs[0].text, "")
-            self.assertEqual(output_doc.paragraphs[1].text, "浙江工商大学")
+            self.assertEqual(output_doc.paragraphs[1].text, "")
             self.assertEqual(output_doc.paragraphs[2].text, info_dict["cover_title"])
             self.assertEqual(output_doc.paragraphs[3].text, "")
             self.assertEqual(output_doc.paragraphs[5].text, "这是已经完成正文排版的第一页内容。")
             self.assertIn('w:type="page"', output_doc.paragraphs[4]._element.xml)
+            self.assertEqual(len(output_doc.inline_shapes), 2)
 
             title_run = output_doc.paragraphs[2].runs[0]
             self.assertEqual(output_doc.paragraphs[2].paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)

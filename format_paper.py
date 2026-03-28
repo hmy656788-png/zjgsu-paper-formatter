@@ -41,6 +41,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def emit_progress(progress_callback, step: int, message: str, detail: str | None = None):
+    """向上层报告排版进度，供 Web SSE 等场景复用。"""
+    if progress_callback is None:
+        return
+
+    payload = {
+        "step": step,
+        "message": message,
+    }
+    if detail:
+        payload["detail"] = detail
+
+    try:
+        progress_callback(payload)
+    except Exception as exc:  # pragma: no cover - 回调失败不应影响主流程
+        logger.warning(f"进度回调发送失败：{exc}")
+
 # ============================================================
 # 正则表达式定义（核心匹配逻辑）
 # ============================================================
@@ -847,7 +865,7 @@ def get_max_printable_width(doc) -> int:
     return min(widths) if widths else 0
 
 
-def constrain_inline_images(doc) -> int:
+def constrain_inline_images(doc, progress_callback=None) -> int:
     """
     检测文档中的内嵌图片，若超出页面可打印宽度则按比例缩小。
 
@@ -859,8 +877,16 @@ def constrain_inline_images(doc) -> int:
     if max_width <= 0:
         return 0
 
+    inline_shapes = list(doc.inline_shapes)
     resized_count = 0
-    for shape in doc.inline_shapes:
+    total_images = len(inline_shapes)
+
+    for index, shape in enumerate(inline_shapes, start=1):
+        emit_progress(
+            progress_callback,
+            3,
+            f"正在检查第 {index}/{total_images} 张图片尺寸",
+        )
         original_width = int(shape.width)
         original_height = int(shape.height)
         if original_width <= 0 or original_height <= 0 or original_width <= max_width:
@@ -870,6 +896,12 @@ def constrain_inline_images(doc) -> int:
         shape.width = max_width
         shape.height = max(1, int(round(original_height * scale)))
         resized_count += 1
+        emit_progress(
+            progress_callback,
+            3,
+            f"已缩小第 {index}/{total_images} 张图片",
+            "图片宽度已限制到页面可打印区域内",
+        )
 
     return resized_count
 
@@ -1599,7 +1631,7 @@ def _append_outline_entry(outline: list[dict], para_type: str, text: str):
 # ============================================================
 # 主函数：学术论文排版
 # ============================================================
-def format_academic_paper(input_path: str, output_path: str) -> dict | bool:
+def format_academic_paper(input_path: str, output_path: str, progress_callback=None) -> dict | bool:
     """
     读取未排版的 .docx 文档，根据学术论文排版规则进行格式重构，保存为新文档。
 
@@ -1624,13 +1656,19 @@ def format_academic_paper(input_path: str, output_path: str) -> dict | bool:
     try:
         doc = Document(input_path)
         logger.info(f"成功读取文档：{input_path}（共 {len(doc.paragraphs)} 个段落）")
+        emit_progress(
+            progress_callback,
+            1,
+            "文档读取完成，正在解析结构",
+            f"共 {len(doc.paragraphs)} 个段落",
+        )
     except Exception as e:
         logger.error(f"无法读取文档 {input_path}：{e}")
         return False
 
-    return _process_document(doc, output_path)
+    return _process_document(doc, output_path, progress_callback=progress_callback)
 
-def format_academic_paper_from_text(text: str, output_path: str) -> dict | bool:
+def format_academic_paper_from_text(text: str, output_path: str, progress_callback=None) -> dict | bool:
     """
     将纯文本内容转换为符合学术论文排版规则的 .docx 文档。
 
@@ -1646,15 +1684,22 @@ def format_academic_paper_from_text(text: str, output_path: str) -> dict | bool:
         for line in split_text_to_paragraphs(text):
             doc.add_paragraph(line)
         logger.info(f"成功从文本创建文档（共 {len(doc.paragraphs)} 个段落）")
+        emit_progress(
+            progress_callback,
+            1,
+            "文本读取完成，正在生成文档结构",
+            f"共 {len(doc.paragraphs)} 个段落",
+        )
     except Exception as e:
         logger.error(f"无法从文本创建文档：{e}")
         return False
 
-    return _process_document(doc, output_path)
+    return _process_document(doc, output_path, progress_callback=progress_callback)
 
-def _process_document(doc, output_path: str) -> dict | bool:
+def _process_document(doc, output_path: str, progress_callback=None) -> dict | bool:
     """内部处理逻辑，将 Document 对象排版并保存。"""
     # ---------- 2. 设置默认文档级字体 ----------
+    emit_progress(progress_callback, 1, "正在初始化页面设置与默认样式")
     try:
         style = doc.styles["Normal"]
         style.font.name = "Times New Roman"
@@ -1695,17 +1740,36 @@ def _process_document(doc, output_path: str) -> dict | bool:
         title_text = normalize_text_for_matching(doc.paragraphs[title_index].text)
 
     page_setup = apply_document_layout(doc, title_text)
+    emit_progress(
+        progress_callback,
+        1,
+        "文档结构解析完成",
+        f"共 {len(doc.paragraphs)} 个段落，准备识别标题与摘要",
+    )
     outline = []
     in_references = False
     in_english_abstract = False
     figure_counter = 0
     table_counter = 0
+    total_paragraphs = len(doc.paragraphs)
 
     # ---------- 4. 遍历并格式化每个段落 ----------
+    emit_progress(progress_callback, 2, "正在识别标题层级与摘要结构")
     for i, paragraph in enumerate(doc.paragraphs):
         raw_text = paragraph.text
         text = normalize_text_for_matching(raw_text)
         para_type = ParagraphType.TITLE if i == title_index else classify_paragraph(raw_text)
+
+        if total_paragraphs and (
+            i == 0
+            or i == total_paragraphs - 1
+            or (i + 1) % max(1, total_paragraphs // 4 or 1) == 0
+        ):
+            emit_progress(
+                progress_callback,
+                2,
+                f"正在识别第 {i + 1}/{total_paragraphs} 段的结构",
+            )
 
         if para_type == ParagraphType.REFERENCES_HEADING:
             in_references = True
@@ -1767,6 +1831,7 @@ def _process_document(doc, output_path: str) -> dict | bool:
             caption_match = match_caption(raw_text)
             caption_text = rebuild_caption_text(ParagraphType.FIGURE_CAPTION, figure_counter, caption_match[1])
             logger.info(f"  [图标题] 第{i+1}段: \"{caption_text}\"")
+            emit_progress(progress_callback, 2, f"识别到第 {figure_counter} 张图片标题")
             format_figure_table(paragraph, text_override=caption_text)
 
         elif para_type == ParagraphType.TABLE_CAPTION:
@@ -1774,6 +1839,7 @@ def _process_document(doc, output_path: str) -> dict | bool:
             caption_match = match_caption(raw_text)
             caption_text = rebuild_caption_text(ParagraphType.TABLE_CAPTION, table_counter, caption_match[1])
             logger.info(f"  [表标题] 第{i+1}段: \"{caption_text}\"")
+            emit_progress(progress_callback, 2, f"识别到第 {table_counter} 张表格标题")
             format_figure_table(paragraph, text_override=caption_text)
 
         elif para_type == ParagraphType.SECTION_HEADING:
@@ -1782,6 +1848,7 @@ def _process_document(doc, output_path: str) -> dict | bool:
 
         elif para_type == ParagraphType.REFERENCES_HEADING:
             logger.info(f"  [参考文献标题] 第{i+1}段: \"{text}\"")
+            emit_progress(progress_callback, 2, "识别到参考文献区域")
             format_references_heading(paragraph, text_override=text)
 
         elif para_type == ParagraphType.REFERENCE_ENTRY:
@@ -1816,12 +1883,20 @@ def _process_document(doc, output_path: str) -> dict | bool:
             format_body(paragraph)
 
     # ---------- 5. 处理表格内段落 ----------
+    emit_progress(progress_callback, 3, "正在应用排版规则")
     table_paragraph_count = 0
     for paragraph in iter_table_paragraphs(doc.tables):
         table_paragraph_count += 1
         format_body(paragraph, in_table=True)
 
-    for table in iter_all_tables(doc.tables):
+    all_tables = list(iter_all_tables(doc.tables))
+    for table_index, table in enumerate(all_tables, start=1):
+        emit_progress(
+            progress_callback,
+            3,
+            f"正在排版第 {table_index}/{len(all_tables)} 张表格",
+            "应用三线表边框与表内正文格式",
+        )
         format_three_line_table(table)
 
     heading_count = (
@@ -1829,10 +1904,13 @@ def _process_document(doc, output_path: str) -> dict | bool:
         + stats[ParagraphType.HEADING_L2]
         + stats[ParagraphType.HEADING_L3]
     )
+    if heading_count >= MIN_TOC_HEADING_COUNT:
+        emit_progress(progress_callback, 3, "正在插入自动目录字段")
     insert_table_of_contents(doc, title_index, heading_count)
-    resized_image_count = constrain_inline_images(doc)
+    resized_image_count = constrain_inline_images(doc, progress_callback=progress_callback)
 
     # ---------- 6. 保存输出文档 ----------
+    emit_progress(progress_callback, 4, "正在生成输出文档")
     try:
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1877,7 +1955,7 @@ def _process_document(doc, output_path: str) -> dict | bool:
 # ============================================================
 # 封面+正文合并
 # ============================================================
-def merge_cover_and_body(cover_path: str, body_path: str, output_path: str):
+def merge_cover_and_body(cover_path: str, body_path: str, output_path: str, progress_callback=None):
     """
     合并封面文档和正文文档。
 
@@ -1903,15 +1981,17 @@ def merge_cover_and_body(cover_path: str, body_path: str, output_path: str):
 
     formatted_body_path = None
     try:
+        emit_progress(progress_callback, 1, "正在读取封面与正文文档")
         with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
             formatted_body_path = tmp.name
 
-        body_result = format_academic_paper(body_path, formatted_body_path)
+        body_result = format_academic_paper(body_path, formatted_body_path, progress_callback=progress_callback)
         if not body_result:
             return False
 
         from docxcompose.composer import Composer
 
+        emit_progress(progress_callback, 4, "正在合并封面与排版后的正文")
         cover_doc = Document(cover_path)
         cover_section_count = len(cover_doc.sections)
 
@@ -1932,6 +2012,7 @@ def merge_cover_and_body(cover_path: str, body_path: str, output_path: str):
 
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
+        emit_progress(progress_callback, 4, "正在写入合并后的输出文档")
         composer.save(output_path)
 
         logger.info(f"合并完成！封面 + 排版正文 → {output_path}")

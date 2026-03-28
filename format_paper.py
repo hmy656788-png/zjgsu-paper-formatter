@@ -27,7 +27,8 @@ from pathlib import Path
 
 from docx import Document
 from docx.shared import Pt, RGBColor, Cm
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK, WD_LINE_SPACING
 from docx.oxml.ns import qn, nsdecls
 from docx.oxml import OxmlElement, parse_xml
 
@@ -81,7 +82,7 @@ RE_ABSTRACT = re.compile(r"^摘\s*要\s*[:：]?\s*")
 # --- 关键词标识匹配 ---
 # 匹配规则：段落起始处包含 "关键词" + 可选的标点符号
 RE_KEYWORDS = re.compile(r"^关\s*键\s*词\s*[:：]?\s*")
-RE_REFERENCES_HEADING = re.compile(r"^参\s*考\s*文\s*献\s*$")
+RE_REFERENCES_HEADING = re.compile(r"^参\s*考\s*文\s*献\s*[:：]?\s*$")
 RE_SECTION_HEADING = re.compile(
     r"^(致谢|附录|作者简介|基金项目|英文摘要|abstract|acknowledg(?:e)?ments?)\s*$",
     re.IGNORECASE,
@@ -107,9 +108,41 @@ PAGE_LAYOUT = {
     "header_distance_cm": 1.5,
     "footer_distance_cm": 1.5,
 }
-DEFAULT_HEADER_TEXT = "浙江工商大学学术论文"
+DEFAULT_HEADER_TEXT = ""
 RUNNING_HEADER_MAX_LENGTH = 28
 CAPTION_MAX_LENGTH = 60
+COVER_INFO_FIELDS = [
+    ("学院", "college"),
+    ("教师", "teacher"),
+    ("班级", "class_name"),
+    ("姓名", "student_name"),
+    ("学号", "student_id"),
+]
+COVER_LAYOUT = {
+    "logo_width_cm": 3.6,
+    "school_name_width_cm": 10.6,
+    "logo_space_before_pt": 30,
+    "logo_space_after_pt": 10,
+    "school_name_space_after_pt": 42,
+    "title_size_pt": 26,
+    "title_space_after_pt": 90,
+    "info_spacer_after_pt": 16,
+    "info_font_pt": 15,
+    "label_width_cm": 2.2,
+    "value_width_cm": 7.2,
+}
+COVER_IMAGE_CANDIDATES = {
+    "logo": ("logo.png", "logo.jpg", "logo.jpeg"),
+    "school_name": (
+        "school_name.png",
+        "school_name.jpg",
+        "school_name.jpeg",
+        "school_name_calligraphy.png",
+        "school_name_calligraphy.jpg",
+        "浙江工商大学.png",
+        "浙江工商大学.jpg",
+    ),
+}
 
 
 # ============================================================
@@ -468,6 +501,203 @@ def _get_primary_paragraph(container):
     return paragraph
 
 
+def _get_primary_cell_paragraph(cell):
+    """获取单元格中的主段落，并删除多余的默认空段落。"""
+    paragraphs = list(cell.paragraphs)
+    paragraph = paragraphs[0] if paragraphs else cell.add_paragraph()
+
+    for extra in paragraphs[1:]:
+        extra._element.getparent().remove(extra._element)
+
+    _remove_all_runs(paragraph)
+    return paragraph
+
+
+def _set_xml_borders(border_container, border_map: dict[str, dict[str, str]]):
+    """
+    使用底层 XML 设置表格/单元格边框。
+
+    python-docx 没有提供“只保留某一条边框”的高级接口，
+    因此需要直接写 WordprocessingML 的边框节点属性。
+    """
+    for edge, attrs in border_map.items():
+        edge_tag = qn(f"w:{edge}")
+        border = border_container.find(edge_tag)
+        if border is None:
+            border = OxmlElement(f"w:{edge}")
+            border_container.append(border)
+
+        for key, value in attrs.items():
+            border.set(qn(f"w:{key}"), str(value))
+
+
+def _hidden_border_attrs() -> dict[str, str]:
+    """
+    返回隐藏边框使用的属性。
+
+    `none` 在 WPS 对表格/段落边框的兼容性通常比 `nil` 更稳定，
+    更适合“隐藏大部分边框、只显示个别一条线”的场景。
+    """
+    return {
+        "val": "none",
+        "sz": "0",
+        "space": "0",
+        "color": "auto",
+    }
+
+
+def _hide_table_borders(table):
+    """
+    在表格级别隐藏所有边框。
+
+    先把整张表的外框和内部横竖线全部置为 nil，
+    后面再对“值列”的单元格单独开启 bottom 边框，
+    这样就能得到类似“填写横线”的封面效果。
+    """
+    tbl_pr = table._tbl.tblPr
+    tbl_borders = tbl_pr.find(qn("w:tblBorders"))
+    if tbl_borders is None:
+        tbl_borders = OxmlElement("w:tblBorders")
+        tbl_pr.append(tbl_borders)
+
+    hidden = _hidden_border_attrs()
+    _set_xml_borders(
+        tbl_borders,
+        {
+            "top": hidden,
+            "left": hidden,
+            "bottom": hidden,
+            "right": hidden,
+            "insideH": hidden,
+            "insideV": hidden,
+        },
+    )
+
+
+def _hide_cell_borders(cell):
+    """显式隐藏单元格四周边框，避免模板样式残留。"""
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tc_borders = tc_pr.find(qn("w:tcBorders"))
+    if tc_borders is None:
+        tc_borders = OxmlElement("w:tcBorders")
+        tc_pr.append(tc_borders)
+
+    hidden = _hidden_border_attrs()
+    _set_xml_borders(
+        tc_borders,
+        {
+            "top": hidden,
+            "left": hidden,
+            "right": hidden,
+            "bottom": hidden,
+        },
+    )
+
+
+def _set_cell_only_bottom_border(cell, color: str = "000000", size: str = "8"):
+    """
+    只保留单元格的下边框，用来模拟封面信息栏的填写横线。
+
+    实现步骤：
+    1. 先把 top/left/right/bottom 全部清空为 nil
+    2. 再把 bottom 单独改成 single
+
+    这样可以确保无论模板原本是否带边框，最终都只有底部这一条线可见。
+    """
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tc_borders = tc_pr.find(qn("w:tcBorders"))
+    if tc_borders is None:
+        tc_borders = OxmlElement("w:tcBorders")
+        tc_pr.append(tc_borders)
+
+    hidden = _hidden_border_attrs()
+    _set_xml_borders(
+        tc_borders,
+        {
+            "top": hidden,
+            "left": hidden,
+            "right": hidden,
+            "bottom": hidden,
+        },
+    )
+    _set_xml_borders(
+        tc_borders,
+        {
+            "bottom": {
+                "val": "single",
+                "sz": size,
+                "space": "0",
+                "color": color,
+            }
+        },
+    )
+
+
+def _set_paragraph_only_bottom_border(paragraph, color: str = "000000", size: str = "10"):
+    """
+    给段落仅保留一条下边框。
+
+    WPS 对“单元格边框 + 整表隐藏边框”的组合并不总是稳定，
+    所以这里在值列段落上再补一条段落下边框，作为更稳的可视化横线。
+    """
+    p_pr = paragraph._element.get_or_add_pPr()
+    p_bdr = p_pr.find(qn("w:pBdr"))
+    if p_bdr is None:
+        p_bdr = OxmlElement("w:pBdr")
+        p_pr.append(p_bdr)
+
+    hidden = _hidden_border_attrs()
+    _set_xml_borders(
+        p_bdr,
+        {
+            "top": hidden,
+            "left": hidden,
+            "right": hidden,
+            "bottom": {
+                "val": "single",
+                "sz": size,
+                "space": "1",
+                "color": color,
+            },
+        },
+    )
+
+
+def _prepend_block_elements(doc, elements):
+    """
+    将一组已创建好的段落/表格 XML 元素移动到文档最前方。
+
+    python-docx 没有“在开头插入 block”的公开 API，
+    所以这里采用“先追加、再搬到开头”的方式实现。
+    """
+    body = doc._body._element
+
+    for insert_index, element in enumerate(elements):
+        body.remove(element)
+        body.insert(insert_index, element)
+
+
+def _resolve_cover_asset_path(explicit_path, asset_key: str) -> Path | None:
+    """
+    解析封面素材路径。
+
+    优先使用显式传入的绝对/相对路径；如果没传，则自动在 `static/` 下
+    查找约定好的默认文件名，减少调用方配置成本。
+    """
+    if explicit_path:
+        candidate = Path(str(explicit_path)).expanduser()
+        if candidate.exists():
+            return candidate
+
+    static_dir = Path(__file__).resolve().parent / "static"
+    for filename in COVER_IMAGE_CANDIDATES.get(asset_key, ()):
+        candidate = static_dir / filename
+        if candidate.exists():
+            return candidate
+
+    return None
+
+
 def _append_page_number_field(paragraph):
     """在页脚插入 Word 自动页码字段。"""
     size_pt = 10.5
@@ -532,8 +762,9 @@ def apply_document_layout(doc, header_text: str) -> dict:
             line_spacing=1.0,
             line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
         )
-        header_run = header_paragraph.add_run(header_value)
-        _set_run_font(header_run, cn_font="宋体", en_font="Times New Roman", size_pt=10.5)
+        if header_value:
+            header_run = header_paragraph.add_run(header_value)
+            _set_run_font(header_run, cn_font="宋体", en_font="Times New Roman", size_pt=10.5)
 
         footer_paragraph = _get_primary_paragraph(section.footer)
         _clear_paragraph_style(footer_paragraph)
@@ -556,6 +787,203 @@ def apply_document_layout(doc, header_text: str) -> dict:
         "header_text": header_value,
         "page_number_position": "footer_center",
     }
+
+
+def generate_cover_page(doc, info_dict):
+    """
+    在文档最前方插入一页标准课程论文封面，并在封面末尾补分页符。
+
+    设计为“正文排版完成后再调用”，这样封面标题不会被正文识别逻辑再次改写。
+    如果缺少 title，则视为没有封面信息，直接返回 False。
+    """
+    if doc is None:
+        raise ValueError("doc 不能为空")
+
+    info_dict = info_dict or {}
+    title_text = normalize_text_for_matching(str(info_dict.get("title", "")))
+    cover_title = normalize_text_for_matching(
+        str(info_dict.get("cover_title") or info_dict.get("course_title") or title_text)
+    )
+    if not title_text:
+        return False
+
+    new_blocks = []
+
+    school_name = normalize_text_for_matching(str(info_dict.get("school_name", "浙江工商大学")))
+    logo_file = _resolve_cover_asset_path(info_dict.get("logo_path"), "logo")
+    school_name_image_file = _resolve_cover_asset_path(info_dict.get("school_name_image_path"), "school_name")
+
+    # ---------- 1. 顶部校徽 ----------
+    logo_paragraph = doc.add_paragraph()
+    _clear_paragraph_style(logo_paragraph)
+    _set_paragraph_format(
+        logo_paragraph,
+        alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        first_line_indent=Pt(0),
+        space_before=Pt(COVER_LAYOUT["logo_space_before_pt"]),
+        space_after=Pt(COVER_LAYOUT["logo_space_after_pt"]),
+        line_spacing=1.0,
+        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+    )
+    if logo_file is not None:
+        logo_paragraph.add_run().add_picture(str(logo_file), width=Cm(COVER_LAYOUT["logo_width_cm"]))
+    new_blocks.append(logo_paragraph._element)
+
+    # ---------- 2. 校名 ----------
+    school_paragraph = doc.add_paragraph()
+    _clear_paragraph_style(school_paragraph)
+    _set_paragraph_format(
+        school_paragraph,
+        alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        first_line_indent=Pt(0),
+        space_after=Pt(COVER_LAYOUT["school_name_space_after_pt"]),
+        line_spacing=1.0,
+        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+    )
+    if school_name_image_file is not None:
+        school_paragraph.add_run().add_picture(str(school_name_image_file), width=Cm(COVER_LAYOUT["school_name_width_cm"]))
+    else:
+        school_run = school_paragraph.add_run(school_name)
+        _set_run_font(school_run, cn_font="华文行楷", en_font="Times New Roman", size_pt=28, bold=False)
+    new_blocks.append(school_paragraph._element)
+
+    # ---------- 3. 封面大标题 ----------
+    title_paragraph = doc.add_paragraph()
+    _clear_paragraph_style(title_paragraph)
+    _set_paragraph_format(
+        title_paragraph,
+        alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        first_line_indent=Pt(0),
+        space_after=Pt(COVER_LAYOUT["title_space_after_pt"]),
+        line_spacing=1.5,
+        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+    )
+    title_run = title_paragraph.add_run(cover_title)
+    _set_run_font(
+        title_run,
+        cn_font="宋体",
+        en_font="Times New Roman",
+        size_pt=COVER_LAYOUT["title_size_pt"],
+        bold=True,
+    )
+    new_blocks.append(title_paragraph._element)
+
+    info_spacer = doc.add_paragraph()
+    _clear_paragraph_style(info_spacer)
+    _set_paragraph_format(
+        info_spacer,
+        alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        first_line_indent=Pt(0),
+        space_after=Pt(COVER_LAYOUT["info_spacer_after_pt"]),
+        line_spacing=1.0,
+        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+    )
+    new_blocks.append(info_spacer._element)
+
+    # ---------- 4. 个人信息栏 ----------
+    # 绝不使用空格/下划线硬凑对齐，而是借助 5x2 表格完成稳定布局。
+    table = doc.add_table(rows=len(COVER_INFO_FIELDS), cols=2)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = False
+    _hide_table_borders(table)
+
+    for row_index, (label, key) in enumerate(COVER_INFO_FIELDS):
+        label_cell = table.cell(row_index, 0)
+        value_cell = table.cell(row_index, 1)
+
+        label_cell.width = Cm(COVER_LAYOUT["label_width_cm"])
+        value_cell.width = Cm(COVER_LAYOUT["value_width_cm"])
+        label_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        value_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+
+        label_paragraph = _get_primary_cell_paragraph(label_cell)
+        _clear_paragraph_style(label_paragraph)
+        _set_paragraph_format(
+            label_paragraph,
+            alignment=WD_ALIGN_PARAGRAPH.RIGHT,
+            first_line_indent=Pt(0),
+            space_before=Pt(6),
+            space_after=Pt(6),
+            line_spacing=1.25,
+            line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+        )
+        label_run = label_paragraph.add_run(label)
+        _set_run_font(
+            label_run,
+            cn_font="宋体",
+            en_font="Times New Roman",
+            size_pt=COVER_LAYOUT["info_font_pt"],
+            bold=True,
+        )
+
+        value_paragraph = _get_primary_cell_paragraph(value_cell)
+        _clear_paragraph_style(value_paragraph)
+        _set_paragraph_format(
+            value_paragraph,
+            alignment=WD_ALIGN_PARAGRAPH.LEFT,
+            first_line_indent=Pt(0),
+            space_before=Pt(6),
+            space_after=Pt(6),
+            line_spacing=1.25,
+            line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+        )
+        value_text = normalize_text_for_matching(str(info_dict.get(key, "")))
+        value_run = value_paragraph.add_run(value_text)
+        # 统一设置中西文字体对，中文保持宋体，数字学号自动显示为 Times New Roman。
+        _set_run_font(
+            value_run,
+            cn_font="宋体",
+            en_font="Times New Roman",
+            size_pt=COVER_LAYOUT["info_font_pt"],
+            bold=False,
+        )
+
+        _hide_cell_borders(label_cell)
+        _set_cell_only_bottom_border(value_cell, size="10")
+        _set_paragraph_only_bottom_border(value_paragraph, size="10")
+
+    new_blocks.append(table._element)
+
+    # ---------- 5. 封面结束后分页 ----------
+    page_break = doc.add_paragraph()
+    _clear_paragraph_style(page_break)
+    _set_paragraph_format(
+        page_break,
+        alignment=WD_ALIGN_PARAGRAPH.LEFT,
+        first_line_indent=Pt(0),
+        line_spacing=1.0,
+        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+    )
+    page_break.add_run().add_break(WD_BREAK.PAGE)
+    new_blocks.append(page_break._element)
+
+    _prepend_block_elements(doc, new_blocks)
+
+    # 使用“首页不同”模式，让封面页不显示页眉和页码，正文从第二页开始承接常规页眉页码。
+    first_section = doc.sections[0]
+    first_section.different_first_page_header_footer = True
+
+    first_page_header = _get_primary_paragraph(first_section.first_page_header)
+    _clear_paragraph_style(first_page_header)
+    _set_paragraph_format(
+        first_page_header,
+        alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        first_line_indent=Pt(0),
+        line_spacing=1.0,
+        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+    )
+
+    first_page_footer = _get_primary_paragraph(first_section.first_page_footer)
+    _clear_paragraph_style(first_page_footer)
+    _set_paragraph_format(
+        first_page_footer,
+        alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        first_line_indent=Pt(0),
+        line_spacing=1.0,
+        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+    )
+
+    return True
 
 
 # ============================================================
@@ -720,6 +1148,33 @@ def format_figure_table(paragraph, text_override: str | None = None):
     _apply_run_fonts(paragraph, cn_font="黑体", en_font="Times New Roman", size_pt=10.5)
 
 
+def format_references_heading(paragraph, text_override: str | None = None):
+    """
+    参考文献标题格式：
+      - 居中
+      - 宋体加粗
+      - 比一级标题更克制，贴近参考样文的紧凑风格
+      - 自动补全为“参考文献：”
+    """
+    _clear_paragraph_style(paragraph)
+    heading_text = normalize_text_for_matching(text_override if text_override is not None else paragraph.text)
+    if heading_text:
+        heading_text = "参考文献："
+        _replace_paragraph_text(paragraph, heading_text)
+
+    _set_paragraph_format(
+        paragraph,
+        alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        first_line_indent=Pt(0),
+        space_before=Pt(12),
+        space_after=Pt(12),
+        line_spacing=1.0,
+        line_spacing_rule=WD_LINE_SPACING.SINGLE,
+    )
+
+    _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12, bold=True)
+
+
 def format_abstract_or_keywords(paragraph, label_pattern: re.Pattern):
     """
     摘要 / 关键词段落格式：
@@ -777,22 +1232,25 @@ def format_abstract_or_keywords(paragraph, label_pattern: re.Pattern):
 def format_reference_entry(paragraph):
     """
     参考文献条目格式：
-      - 宋体 / Times New Roman，小四号
-      - 悬挂缩进 2 个字符
-      - 1.5 倍行距
+      - 左对齐
+      - 宋体 / Times New Roman，五号（10pt）
+      - 单倍行距
+      - 参考样文使用轻微首行缩进，而不是正文式悬挂缩进
     """
     _clear_paragraph_style(paragraph)
     _set_paragraph_format(
         paragraph,
-        alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
-        first_line_indent=Pt(-24),
-        space_after=Pt(3),
-        line_spacing=1.5,
-        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+        alignment=WD_ALIGN_PARAGRAPH.LEFT,
+        first_line_indent=Pt(21),
+        space_before=Pt(0),
+        space_after=Pt(0),
+        line_spacing=1.0,
+        line_spacing_rule=WD_LINE_SPACING.SINGLE,
     )
-    paragraph.paragraph_format.left_indent = Pt(24)
+    paragraph.paragraph_format.left_indent = Pt(0)
+    paragraph.paragraph_format.right_indent = Pt(0)
 
-    _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
+    _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=10)
 
 
 def _append_outline_entry(outline: list[dict], para_type: str, text: str):
@@ -976,7 +1434,7 @@ def _process_document(doc, output_path: str) -> dict | bool:
 
         elif para_type == ParagraphType.REFERENCES_HEADING:
             logger.info(f"  [参考文献标题] 第{i+1}段: \"{text}\"")
-            format_heading_l1(paragraph, text_override=text)
+            format_references_heading(paragraph, text_override=text)
 
         elif para_type == ParagraphType.REFERENCE_ENTRY:
             logger.info(f"  [参考文献条目] 第{i+1}段: \"{text[:30]}...\"")
@@ -1035,6 +1493,78 @@ def _process_document(doc, output_path: str) -> dict | bool:
         "table_paragraphs": table_paragraph_count,
         "outline": outline,
     }
+
+
+# ============================================================
+# 封面+正文合并
+# ============================================================
+def merge_cover_and_body(cover_path: str, body_path: str, output_path: str):
+    """
+    合并封面文档和正文文档。
+
+    封面保持原样不做排版处理，正文按学术论文规范排版，
+    合并后正文部分页码从 1 开始。
+
+    Returns:
+        排版结果 dict（成功）或 False（失败）
+    """
+    import tempfile
+    from contextlib import suppress
+
+    cover_file = Path(cover_path)
+    body_file = Path(body_path)
+
+    if not cover_file.exists():
+        logger.error(f"封面文件不存在：{cover_path}")
+        return False
+
+    if not body_file.exists():
+        logger.error(f"正文文件不存在：{body_path}")
+        return False
+
+    formatted_body_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+            formatted_body_path = tmp.name
+
+        body_result = format_academic_paper(body_path, formatted_body_path)
+        if not body_result:
+            return False
+
+        from docxcompose.composer import Composer
+
+        cover_doc = Document(cover_path)
+        cover_section_count = len(cover_doc.sections)
+
+        composer = Composer(cover_doc)
+        formatted_body_doc = Document(formatted_body_path)
+        composer.append(formatted_body_doc)
+
+        # 在正文首节重启页码为 1
+        merged_sections = list(cover_doc.sections)
+        if len(merged_sections) > cover_section_count:
+            body_first_section = merged_sections[cover_section_count]
+            sect_pr = body_first_section._sectPr
+            pg_num_type = sect_pr.find(qn("w:pgNumType"))
+            if pg_num_type is None:
+                pg_num_type = OxmlElement("w:pgNumType")
+                sect_pr.append(pg_num_type)
+            pg_num_type.set(qn("w:start"), "1")
+
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        composer.save(output_path)
+
+        logger.info(f"合并完成！封面 + 排版正文 → {output_path}")
+        return body_result
+
+    except Exception as e:
+        logger.error(f"合并文档失败: {e}", exc_info=True)
+        return False
+    finally:
+        if formatted_body_path:
+            with suppress(OSError):
+                Path(formatted_body_path).unlink()
 
 
 # ============================================================

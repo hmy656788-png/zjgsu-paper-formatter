@@ -9,9 +9,11 @@ from docx.oxml.ns import qn
 from docx.shared import Inches
 
 from format_paper import (
+    apply_document_layout,
     find_title_paragraph_index,
     format_academic_paper,
     format_academic_paper_from_text,
+    generate_cover_page,
     split_text_to_paragraphs,
 )
 
@@ -151,8 +153,13 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertEqual(heading_l3.paragraph_format.first_line_indent.pt, 0.0)
 
             self.assertEqual(references_heading.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
-            self.assertAlmostEqual(reference_entry.paragraph_format.left_indent.pt, 24.0, places=1)
-            self.assertAlmostEqual(reference_entry.paragraph_format.first_line_indent.pt, -24.0, places=1)
+            self.assertEqual(references_heading.text, "参考文献：")
+            self.assertEqual(references_heading.runs[0].font.size.pt, 12.0)
+            self.assertEqual(reference_entry.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
+            self.assertAlmostEqual(reference_entry.paragraph_format.left_indent.pt, 0.0, places=1)
+            self.assertAlmostEqual(reference_entry.paragraph_format.first_line_indent.pt, 21.0, places=1)
+            self.assertEqual(reference_entry.paragraph_format.line_spacing, 1.0)
+            self.assertEqual(reference_entry.runs[0].font.size.pt, 10.0)
         finally:
             output_path.unlink(missing_ok=True)
 
@@ -278,8 +285,85 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assert_run_uses_mixed_font_pair(self, table_run)
 
             reference_entry = output_doc.paragraphs[12]
-            self.assertAlmostEqual(reference_entry.paragraph_format.left_indent.pt, 24.0, places=1)
-            self.assertAlmostEqual(reference_entry.paragraph_format.first_line_indent.pt, -24.0, places=1)
+            self.assertAlmostEqual(reference_entry.paragraph_format.left_indent.pt, 0.0, places=1)
+            self.assertAlmostEqual(reference_entry.paragraph_format.first_line_indent.pt, 21.0, places=1)
+            self.assertEqual(reference_entry.paragraph_format.line_spacing, 1.0)
+            self.assertEqual(reference_entry.runs[0].font.size.pt, 10.0)
+
+    def test_generate_cover_page_inserts_cover_table_and_page_break(self):
+        info_dict = {
+            "title": "企业数字化转型对绿色技术创新的影响研究",
+            "cover_title": "《大数据挖掘》期末大作业",
+            "college": "工商管理学院",
+            "teacher": "刘璇",
+            "class_name": "国商2301",
+            "student_name": "何旻洋",
+            "student_id": "2320100731",
+        }
+
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            output_path = Path(handle.name)
+
+        try:
+            doc = Document()
+            doc.add_paragraph("这是已经完成正文排版的第一页内容。")
+            doc.add_paragraph("这是正文第二段。")
+            apply_document_layout(doc, "这是正文运行页眉")
+
+            self.assertTrue(generate_cover_page(doc, info_dict))
+            doc.save(str(output_path))
+
+            output_doc = Document(str(output_path))
+
+            self.assertEqual(output_doc.paragraphs[0].text, "")
+            self.assertEqual(output_doc.paragraphs[1].text, "浙江工商大学")
+            self.assertEqual(output_doc.paragraphs[2].text, info_dict["cover_title"])
+            self.assertEqual(output_doc.paragraphs[3].text, "")
+            self.assertEqual(output_doc.paragraphs[5].text, "这是已经完成正文排版的第一页内容。")
+            self.assertIn('w:type="page"', output_doc.paragraphs[4]._element.xml)
+
+            title_run = output_doc.paragraphs[2].runs[0]
+            self.assertEqual(output_doc.paragraphs[2].paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+            self.assertTrue(title_run.font.bold)
+            self.assertEqual(title_run.font.size.pt, 26.0)
+
+            cover_table = output_doc.tables[0]
+            self.assertEqual(len(cover_table.rows), 5)
+            self.assertEqual(cover_table.cell(0, 0).text, "学院")
+            self.assertEqual(cover_table.cell(0, 1).text, "工商管理学院")
+            self.assertEqual(cover_table.cell(4, 1).text, "2320100731")
+
+            label_borders = cover_table.cell(0, 0)._tc.tcPr.find(qn("w:tcBorders"))
+            value_borders = cover_table.cell(0, 1)._tc.tcPr.find(qn("w:tcBorders"))
+            self.assertEqual(label_borders.find(qn("w:bottom")).get(qn("w:val")), "none")
+            self.assertEqual(value_borders.find(qn("w:top")).get(qn("w:val")), "none")
+            self.assertEqual(value_borders.find(qn("w:left")).get(qn("w:val")), "none")
+            self.assertEqual(value_borders.find(qn("w:right")).get(qn("w:val")), "none")
+            self.assertEqual(value_borders.find(qn("w:bottom")).get(qn("w:val")), "single")
+
+            paragraph_borders = cover_table.cell(0, 1).paragraphs[0]._element.pPr.find(qn("w:pBdr"))
+            self.assertIsNotNone(paragraph_borders)
+            self.assertEqual(paragraph_borders.find(qn("w:bottom")).get(qn("w:val")), "single")
+
+            label_run = cover_table.cell(0, 0).paragraphs[0].runs[0]
+            value_run = cover_table.cell(4, 1).paragraphs[0].runs[0]
+            self.assert_run_uses_mixed_font_pair(self, label_run)
+            self.assert_run_uses_mixed_font_pair(self, value_run)
+
+            section = output_doc.sections[0]
+            self.assertTrue(section.different_first_page_header_footer)
+            self.assertEqual(section.first_page_header.paragraphs[0].text, "")
+            self.assertEqual(section.first_page_footer.paragraphs[0].text, "")
+            self.assertEqual(section.header.paragraphs[0].text, "这是正文运行页眉")
+        finally:
+            output_path.unlink(missing_ok=True)
+
+    def test_generate_cover_page_skips_when_title_is_missing(self):
+        doc = Document()
+        doc.add_paragraph("正文内容")
+
+        self.assertFalse(generate_cover_page(doc, {"student_name": "何旻洋"}))
+        self.assertEqual([paragraph.text for paragraph in doc.paragraphs], ["正文内容"])
 
 
 if __name__ == "__main__":

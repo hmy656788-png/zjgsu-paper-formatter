@@ -20,6 +20,7 @@ from format_paper import (
     ParagraphType,
     format_academic_paper,
     format_academic_paper_from_text,
+    merge_cover_and_body,
 )
 
 try:
@@ -151,7 +152,7 @@ def build_preview(summary: dict) -> dict:
 
     top_margin = page_setup.get("margins_cm", {}).get("top", 2.54)
     left_margin = page_setup.get("margins_cm", {}).get("left", 3.18)
-    header_text = truncate_preview_text(page_setup.get("header_text", "浙江工商大学学术论文"))
+    header_text = truncate_preview_text(page_setup.get("header_text", ""))
 
     structure_bits = []
     for key, label, unit in (
@@ -168,14 +169,16 @@ def build_preview(summary: dict) -> dict:
             structure_bits.append(describe_structure_count(count, label, unit))
 
     structure_description = "、".join(structure_bits) or "正文段落已统一为小四、首行缩进和 1.5 倍行距"
-    if title_text and page_setup.get("header_text") != title_text:
+    if not header_text:
+        header_description = "正文未设置固定默认页眉，页脚仍会插入可更新的自动页码字段"
+    elif title_text and page_setup.get("header_text") != title_text:
         header_description = f"页眉显示“{header_text}”，超长标题会自动缩成更适合打印的运行页眉"
     else:
         header_description = f"页眉显示“{header_text}”，页脚插入可更新的自动页码字段"
 
     reference_count = stats.get(ParagraphType.REFERENCE_ENTRY, 0)
     if reference_count:
-        reference_description = f"识别到 {reference_count} 条参考文献，已应用悬挂缩进和统一正文行距"
+        reference_description = f"识别到 {reference_count} 条参考文献，已统一为左对齐、五号字号和更紧凑的文献列表样式"
     else:
         reference_description = "暂未识别到“参考文献”标题，本次仍已完成正文和标题层级排版"
 
@@ -399,6 +402,96 @@ def api_format_text():
                 output_path.unlink()
         logger.error(f"文本处理异常: {e}", exc_info=True)
         return json_error("服务器内部错误，请稍后重试。", 500)
+
+
+@app.route("/api/format_merge", methods=["POST"])
+def api_format_merge():
+    """接收封面文档和正文文档，排版正文后合并为一个文档。"""
+    cleanup_expired_files(UPLOAD_FOLDER, OUTPUT_FOLDER)
+
+    if "cover" not in request.files:
+        return json_error("未检测到封面文档", 400)
+    if "body" not in request.files:
+        return json_error("未检测到正文文档", 400)
+
+    cover_file = request.files["cover"]
+    body_file = request.files["body"]
+
+    if cover_file.filename == "":
+        return json_error("未选择封面文档", 400)
+    if body_file.filename == "":
+        return json_error("未选择正文文档", 400)
+
+    if not allowed_file(cover_file.filename):
+        return json_error("封面文档仅支持 .docx 格式", 400)
+    if not allowed_file(body_file.filename):
+        return json_error("正文文档仅支持 .docx 格式", 400)
+
+    cover_path = None
+    body_path = None
+    output_path = None
+
+    try:
+        job_id = str(uuid.uuid4())[:8]
+        body_name = get_display_name(body_file.filename)
+
+        cover_path = UPLOAD_FOLDER / f"{job_id}_cover.docx"
+        body_path = UPLOAD_FOLDER / f"{job_id}_body.docx"
+        output_filename = f"{job_id}_output.docx"
+        output_path = OUTPUT_FOLDER / output_filename
+
+        cover_file.save(str(cover_path))
+        body_file.save(str(body_path))
+
+        cover_size = cover_path.stat().st_size
+        body_size = body_path.stat().st_size
+        logger.info(f"收到合并请求: 封面={cover_file.filename} ({cover_size / 1024:.1f} KB), 正文={body_file.filename} ({body_size / 1024:.1f} KB)")
+
+        start_time = time.time()
+        result = merge_cover_and_body(str(cover_path), str(body_path), str(output_path))
+        elapsed = time.time() - start_time
+
+        if not result:
+            with suppress(OSError):
+                output_path.unlink()
+            return json_error("合并排版失败，请检查文档格式是否正确", 500)
+
+        output_size = output_path.stat().st_size
+
+        response_data = {
+            "success": True,
+            "job_id": job_id,
+            "original_name": body_name,
+            "download_url": f"/api/download/{output_filename}",
+            "download_name": f"{body_name}_合并排版后.docx",
+            "stats": {
+                "input_size": f"{(cover_size + body_size) / 1024:.1f} KB",
+                "output_size": f"{output_size / 1024:.1f} KB",
+                "elapsed": f"{elapsed:.2f}s",
+            }
+        }
+
+        if isinstance(result, dict):
+            response_data["format_result"] = {
+                "outline": result.get("outline", []),
+                "page_setup": result.get("page_setup", {}),
+                "stats": {k: v for k, v in result.get("stats", {}).items()},
+                "table_paragraphs": result.get("table_paragraphs", 0),
+            }
+
+        return jsonify(response_data)
+
+    except Exception as e:
+        if output_path is not None:
+            with suppress(OSError):
+                output_path.unlink()
+        logger.error(f"合并处理过程中出现异常: {e}", exc_info=True)
+        return json_error("服务器内部错误，请稍后重试。", 500)
+    finally:
+        for path in (cover_path, body_path):
+            if path is not None:
+                with suppress(OSError):
+                    path.unlink()
 
 
 @app.route("/api/download/<filename>")

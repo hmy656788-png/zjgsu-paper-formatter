@@ -115,6 +115,44 @@
           </div>
         </div>
 
+        <div class="cover-builder">
+          <label class="cover-builder-toggle" for="coverMetaEnabled">
+            <input type="checkbox" id="coverMetaEnabled" />
+            <span>自动生成模板封面</span>
+          </label>
+          <p class="cover-builder-hint">不上传封面文档时，可直接填写课程信息自动生成浙工商课程论文封面。</p>
+
+          <div class="cover-meta hidden" id="coverMetaPanel">
+            <div class="cover-meta-grid">
+              <label class="cover-field">
+                <span>封面大标题</span>
+                <input type="text" id="coverTitleInput" placeholder="例如：《大数据挖掘》期末大作业" />
+              </label>
+              <label class="cover-field">
+                <span>学院</span>
+                <input type="text" id="collegeInput" placeholder="例如：工商管理学院" />
+              </label>
+              <label class="cover-field">
+                <span>教师</span>
+                <input type="text" id="teacherInput" placeholder="例如：刘璇" />
+              </label>
+              <label class="cover-field">
+                <span>班级</span>
+                <input type="text" id="classNameInput" placeholder="例如：国商2301" />
+              </label>
+              <label class="cover-field">
+                <span>姓名</span>
+                <input type="text" id="studentNameInput" placeholder="例如：何旻洋" />
+              </label>
+              <label class="cover-field">
+                <span>学号</span>
+                <input type="text" id="studentIdInput" placeholder="例如：2320100731" />
+              </label>
+            </div>
+            <p class="cover-builder-note">论文标题会优先从正文自动识别；如果同时上传封面文档，将优先使用上传的封面。</p>
+          </div>
+        </div>
+
         <button class="btn-format" id="btnFormat">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="4 7 4 4 20 4 20 7"/>
@@ -131,6 +169,7 @@
           <div class="spinner"></div>
           <h3 class="processing-title">正在排版中...</h3>
           <p class="processing-hint">智能识别论文结构，应用浙工商学术排版规范</p>
+          <p class="processing-live" id="processingLive">正在准备任务...</p>
           <div class="processing-steps">
             <div class="step active" id="step1">
               <div class="step-dot"></div>

@@ -5,7 +5,9 @@ from pathlib import Path
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import parse_xml
 from docx.oxml.ns import qn
+from docx.oxml.ns import nsdecls
 from docx.shared import Inches
 
 from format_paper import (
@@ -25,6 +27,26 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
         test_case.assertEqual(r_fonts.get(qn("w:eastAsia")), "宋体")
         test_case.assertEqual(r_fonts.get(qn("w:ascii")), "Times New Roman")
         test_case.assertEqual(r_fonts.get(qn("w:hAnsi")), "Times New Roman")
+
+    def assert_paragraph_has_numbering(self, paragraph, ilvl: int) -> int:
+        num_pr = paragraph._element.pPr.find(qn("w:numPr"))
+        self.assertIsNotNone(num_pr)
+        self.assertEqual(num_pr.find(qn("w:ilvl")).get(qn("w:val")), str(ilvl))
+        return int(num_pr.find(qn("w:numId")).get(qn("w:val")))
+
+    def assert_numbering_overrides(self, doc, num_id: int, expected_starts: dict[int, int]):
+        numbering = doc.part.numbering_part.numbering_definitions._numbering
+        num = numbering.num_having_numId(num_id)
+
+        for ilvl, start_value in expected_starts.items():
+            lvl_override = next(
+                override
+                for override in num.findall("./" + qn("w:lvlOverride"))
+                if override.get(qn("w:ilvl")) == str(ilvl)
+            )
+            start_override = lvl_override.find(qn("w:startOverride"))
+            self.assertIsNotNone(start_override)
+            self.assertEqual(start_override.get(qn("w:val")), str(start_value))
 
     def test_split_text_to_paragraphs_normalizes_line_endings(self):
         text = "第一段\r\n\r\n第二段\r第三段\n"
@@ -98,6 +120,39 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
         finally:
             output_path.unlink(missing_ok=True)
 
+    def test_format_academic_paper_from_text_generates_cover_from_cover_info(self):
+        text = (
+            "企业数字化转型对绿色技术创新的影响研究\n"
+            "摘要：这是摘要内容\n"
+            "关键词：数字化 创新\n"
+            "正文内容"
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            output_path = Path(handle.name)
+
+        try:
+            summary = format_academic_paper_from_text(
+                text,
+                str(output_path),
+                cover_info={
+                    "cover_title": "《大数据挖掘》期末大作业",
+                    "college": "工商管理学院",
+                    "teacher": "刘璇",
+                    "class_name": "国商2301",
+                    "student_name": "何旻洋",
+                    "student_id": "2320100731",
+                },
+            )
+
+            self.assertTrue(summary["cover_generated"])
+            output_doc = Document(str(output_path))
+            self.assertEqual(output_doc.paragraphs[2].text, "《大数据挖掘》期末大作业")
+            self.assertEqual(output_doc.tables[0].cell(0, 1).text, "工商管理学院")
+            self.assertEqual(output_doc.tables[0].cell(4, 1).text, "2320100731")
+        finally:
+            output_path.unlink(missing_ok=True)
+
     def test_format_academic_paper_from_text_applies_page_layout_and_page_number(self):
         text = "基于多元回归模型的城市化研究\n摘要：这是摘要内容\n关键词：城市化 回归\n1 引言\n正文内容"
 
@@ -151,7 +206,9 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertTrue(any(item["level"] == "references" for item in summary["outline"]))
 
             doc = Document(str(output_path))
-            heading_l3 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "1.1.1 研究假设")
+            heading_l1 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "引言")
+            heading_l2 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "研究背景")
+            heading_l3 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "研究假设")
             references_heading = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "参考文献：")
             reference_entry = next(paragraph for paragraph in doc.paragraphs if paragraph.text.startswith("[1] 张三."))
             toc_heading = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "目录")
@@ -164,11 +221,18 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
                 if 'w:type="page"' in paragraph._element.xml
             )
 
+            heading_l1_num_id = self.assert_paragraph_has_numbering(heading_l1, 0)
+            heading_l2_num_id = self.assert_paragraph_has_numbering(heading_l2, 1)
+            heading_l3_num_id = self.assert_paragraph_has_numbering(heading_l3, 2)
+
             self.assertEqual(heading_l3.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
             self.assertTrue(heading_l3.runs[0].font.bold)
             self.assertEqual(heading_l3.runs[0].font.size.pt, 12.0)
             self.assertEqual(heading_l3.paragraph_format.first_line_indent.pt, 0.0)
             self.assertEqual(heading_l3._element.pPr.find(qn("w:outlineLvl")).get(qn("w:val")), "2")
+            self.assert_numbering_overrides(doc, heading_l1_num_id, {0: 1})
+            self.assert_numbering_overrides(doc, heading_l2_num_id, {0: 1, 1: 1})
+            self.assert_numbering_overrides(doc, heading_l3_num_id, {0: 1, 1: 1, 2: 1})
 
             self.assertEqual(references_heading.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
             self.assertEqual(references_heading.text, "参考文献：")
@@ -267,6 +331,7 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
                 if paragraph.text.startswith("This paper studies supply chain resilience")
             )
             keywords = next(paragraph for paragraph in doc.paragraphs if paragraph.text.startswith("Keywords:"))
+            introduction = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "Introduction")
 
             self.assertEqual(abstract_heading.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
             self.assertTrue(abstract_heading.runs[0].font.bold)
@@ -279,8 +344,79 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertEqual(keywords.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
             self.assertTrue(keywords.runs[0].font.bold)
             self.assertEqual(keywords.text, "Keywords: supply chain resilience; cross-border e-commerce")
+            self.assert_paragraph_has_numbering(introduction, 0)
         finally:
             output_path.unlink(missing_ok=True)
+
+    def test_format_academic_paper_from_text_preserves_explicit_heading_number_offsets(self):
+        text = (
+            "数字化转型场景下企业韧性研究\n"
+            "摘要：这是摘要内容\n"
+            "关键词：数字化 韧性\n"
+            "3 研究设计\n"
+            "3.2 数据来源\n"
+            "3.2.4 稳健性检验\n"
+            "正文内容"
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            output_path = Path(handle.name)
+
+        try:
+            summary = format_academic_paper_from_text(text, str(output_path))
+
+            self.assertIsInstance(summary, dict)
+
+            doc = Document(str(output_path))
+            heading_l1 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "研究设计")
+            heading_l2 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "数据来源")
+            heading_l3 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "稳健性检验")
+
+            heading_l1_num_id = self.assert_paragraph_has_numbering(heading_l1, 0)
+            heading_l2_num_id = self.assert_paragraph_has_numbering(heading_l2, 1)
+            heading_l3_num_id = self.assert_paragraph_has_numbering(heading_l3, 2)
+
+            self.assert_numbering_overrides(doc, heading_l1_num_id, {0: 3})
+            self.assert_numbering_overrides(doc, heading_l2_num_id, {0: 3, 1: 2})
+            self.assert_numbering_overrides(doc, heading_l3_num_id, {0: 3, 1: 2, 2: 4})
+        finally:
+            output_path.unlink(missing_ok=True)
+
+    def test_format_academic_paper_preserves_equation_paragraphs(self):
+        omml = parse_xml(
+            r"""
+            <m:oMathPara %s>
+              <m:oMath>
+                <m:r>
+                  <m:t>x=1</m:t>
+                </m:r>
+              </m:oMath>
+            </m:oMathPara>
+            """ % nsdecls("m")
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "equation_input.docx"
+            output_path = temp_path / "equation_output.docx"
+
+            doc = Document()
+            doc.add_paragraph("含公式的论文标题")
+            doc.add_paragraph("摘要：这是摘要内容")
+            doc.add_paragraph("关键词：公式 测试")
+            equation_paragraph = doc.add_paragraph()
+            equation_paragraph._element.append(omml)
+            doc.save(str(input_path))
+
+            summary = format_academic_paper(str(input_path), str(output_path))
+
+            self.assertEqual(summary["equation_paragraphs"], 1)
+
+            output_doc = Document(str(output_path))
+            preserved_equation = output_doc.paragraphs[3]
+            self.assertIn("oMath", preserved_equation._element.xml)
+            self.assertEqual(preserved_equation.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+            self.assertEqual(preserved_equation.paragraph_format.first_line_indent.pt, 0.0)
 
     def test_format_academic_paper_handles_complex_doc_with_images_table_and_lists(self):
         tiny_png = base64.b64decode(
@@ -337,12 +473,13 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             output_doc = Document(str(output_path))
             self.assertEqual(len(output_doc.inline_shapes), 2)
 
-            self.assertEqual(output_doc.paragraphs[3].text, "1 引言")
+            self.assertEqual(output_doc.paragraphs[3].text, "引言")
             self.assertEqual(output_doc.paragraphs[7].text, "图 1 系统架构图")
             self.assertEqual(output_doc.paragraphs[9].text, "图 2 模型流程图")
             self.assertEqual(output_doc.paragraphs[10].text, "表 1 样本描述统计")
             self.assertEqual(output_doc.paragraphs[5].style.name, "List Bullet")
             self.assertEqual(output_doc.paragraphs[6].paragraph_format.first_line_indent.pt, 0.0)
+            self.assert_paragraph_has_numbering(output_doc.paragraphs[3], 0)
 
             body_run = output_doc.paragraphs[4].runs[0]
             table_run = output_doc.tables[0].cell(1, 1).paragraphs[0].runs[0]
@@ -355,13 +492,14 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertEqual(reference_entry.paragraph_format.line_spacing, 1.0)
             self.assertEqual(reference_entry.runs[0].font.size.pt, 10.0)
 
+            tbl_borders = output_doc.tables[0]._tbl.tblPr.find(qn("w:tblBorders"))
             top_left_borders = output_doc.tables[0].cell(0, 0)._tc.tcPr.find(qn("w:tcBorders"))
             bottom_left_borders = output_doc.tables[0].cell(1, 0)._tc.tcPr.find(qn("w:tcBorders"))
-            self.assertEqual(top_left_borders.find(qn("w:top")).get(qn("w:val")), "single")
+            self.assertEqual(tbl_borders.find(qn("w:top")).get(qn("w:val")), "single")
+            self.assertEqual(tbl_borders.find(qn("w:bottom")).get(qn("w:val")), "single")
+            self.assertEqual(tbl_borders.find(qn("w:insideV")).get(qn("w:val")), "none")
             self.assertEqual(top_left_borders.find(qn("w:bottom")).get(qn("w:val")), "single")
-            self.assertEqual(top_left_borders.find(qn("w:left")).get(qn("w:val")), "none")
-            self.assertEqual(bottom_left_borders.find(qn("w:top")).get(qn("w:val")), "none")
-            self.assertEqual(bottom_left_borders.find(qn("w:bottom")).get(qn("w:val")), "single")
+            self.assertEqual(bottom_left_borders.find(qn("w:bottom")).get(qn("w:val")), "none")
 
     def test_format_academic_paper_scales_oversized_images_to_page_width(self):
         tiny_png = base64.b64decode(

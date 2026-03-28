@@ -638,7 +638,19 @@ body {
 .processing-hint {
   font-size: 0.85rem;
   color: var(--text-secondary);
-  margin-bottom: var(--space-xl);
+  margin-bottom: var(--space-sm);
+}
+
+.processing-live {
+  width: min(100%, 420px);
+  margin: 0 auto var(--space-xl);
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  font-size: 0.84rem;
+  line-height: 1.6;
 }
 
 .processing-steps {
@@ -983,6 +995,89 @@ body {
   color: var(--error);
   border-color: var(--error);
   background: hsla(0, 72%, 58%, 0.1);
+}
+
+.cover-builder {
+  margin-bottom: var(--space-md);
+  padding: 14px var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.cover-builder-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.cover-builder-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary-light);
+}
+
+.cover-builder-hint,
+.cover-builder-note {
+  margin-top: 8px;
+  font-size: 0.78rem;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.cover-meta {
+  margin-top: var(--space-md);
+}
+
+.cover-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.cover-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cover-field span {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+
+.cover-field input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(13, 24, 38, 0.56);
+  color: var(--text-primary);
+  font-size: 0.86rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.cover-field input:focus {
+  outline: none;
+  border-color: var(--primary-light);
+  box-shadow: 0 0 0 3px rgba(86, 139, 202, 0.14);
+  background: rgba(13, 24, 38, 0.72);
+}
+
+.cover-field input::placeholder {
+  color: var(--text-muted);
+}
+
+@media (max-width: 720px) {
+  .cover-meta-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ====== 错误区域 ====== */

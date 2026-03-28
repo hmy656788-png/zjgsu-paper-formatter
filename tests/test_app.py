@@ -3,6 +3,8 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 
+from docx import Document
+
 import app as app_module
 
 
@@ -23,6 +25,7 @@ class AppRoutesTestCase(unittest.TestCase):
         self.original_output_folder = app_module.OUTPUT_FOLDER
         app_module.UPLOAD_FOLDER = self.upload_dir
         app_module.OUTPUT_FOLDER = self.output_dir
+        app_module.PROGRESS_JOBS.clear()
 
         self.client = app_module.app.test_client()
         self.test_doc_bytes = TEST_DOC_PATH.read_bytes()
@@ -30,6 +33,7 @@ class AppRoutesTestCase(unittest.TestCase):
     def tearDown(self):
         app_module.UPLOAD_FOLDER = self.original_upload_folder
         app_module.OUTPUT_FOLDER = self.original_output_folder
+        app_module.PROGRESS_JOBS.clear()
         self.temp_dir.cleanup()
 
     def test_format_preserves_unicode_filename(self):
@@ -43,6 +47,32 @@ class AppRoutesTestCase(unittest.TestCase):
         data = response.get_json()
         self.assertEqual(data["original_name"], "我的论文终稿")
         self.assertEqual(data["download_name"], "我的论文终稿_排版后.docx")
+
+    def test_format_generates_cover_from_form_fields(self):
+        response = self.client.post(
+            "/api/format",
+            data={
+                "file": (BytesIO(self.test_doc_bytes), "test_input.docx"),
+                "generate_cover": "1",
+                "cover_title": "《大数据挖掘》期末大作业",
+                "college": "工商管理学院",
+                "teacher": "刘璇",
+                "class_name": "国商2301",
+                "student_name": "何旻洋",
+                "student_id": "2320100731",
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertTrue(data["success"])
+        self.assertTrue(data["format_summary"]["cover_generated"])
+
+        output_doc = Document(next(self.output_dir.glob("*_output.docx")))
+        self.assertEqual(output_doc.paragraphs[2].text, "《大数据挖掘》期末大作业")
+        self.assertEqual(output_doc.tables[0].cell(0, 1).text, "工商管理学院")
+        self.assertEqual(output_doc.tables[0].cell(4, 1).text, "2320100731")
 
     def test_format_cleans_up_uploaded_temp_file(self):
         response = self.client.post(
@@ -206,6 +236,65 @@ class AppRoutesTestCase(unittest.TestCase):
         self.assertEqual(data["format_summary"]["stats"]["reference_entry"], 1)
         self.assertEqual(data["format_summary"]["stats"]["section_heading"], 1)
         self.assertTrue(any(item["level"] == "section" for item in data["preview"]["outline"]))
+
+    def test_format_async_streams_progress_and_exposes_result(self):
+        start_response = self.client.post(
+            "/api/format_async",
+            data={"file": (BytesIO(self.test_doc_bytes), "test_input.docx")},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(start_response.status_code, 202)
+        start_data = start_response.get_json()
+        self.assertTrue(start_data["success"])
+        self.assertIn("/api/jobs/", start_data["events_url"])
+        self.assertIn("/api/jobs/", start_data["result_url"])
+
+        events_response = self.client.get(start_data["events_url"], buffered=True)
+        events_text = events_response.get_data(as_text=True)
+        self.assertEqual(events_response.status_code, 200)
+        self.assertIn("event: progress", events_text)
+        self.assertIn("event: complete", events_text)
+        self.assertIn("正在生成输出文档", events_text)
+
+        result_response = self.client.get(start_data["result_url"])
+        result_data = result_response.get_json()
+        self.assertEqual(result_response.status_code, 200)
+        self.assertTrue(result_data["success"])
+        self.assertEqual(result_data["format_summary"]["page_setup"]["page_size"], "A4")
+        self.assertIn("preview", result_data)
+
+    def test_format_text_async_streams_progress_and_exposes_result(self):
+        start_response = self.client.post(
+            "/api/format_text_async",
+            json={
+                "text": (
+                    "基于多元回归模型的城市化研究\n"
+                    "摘要：这是摘要内容\n"
+                    "关键词：城市化 回归\n"
+                    "1 引言\n"
+                    "1.1 研究背景\n"
+                    "正文内容"
+                )
+            },
+        )
+
+        self.assertEqual(start_response.status_code, 202)
+        start_data = start_response.get_json()
+        self.assertTrue(start_data["success"])
+
+        events_response = self.client.get(start_data["events_url"], buffered=True)
+        events_text = events_response.get_data(as_text=True)
+        self.assertEqual(events_response.status_code, 200)
+        self.assertIn("event: progress", events_text)
+        self.assertIn("event: complete", events_text)
+        self.assertIn("识别标题层级", events_text)
+
+        result_response = self.client.get(start_data["result_url"])
+        result_data = result_response.get_json()
+        self.assertEqual(result_response.status_code, 200)
+        self.assertTrue(result_data["success"])
+        self.assertEqual(result_data["format_summary"]["stats"]["heading_l2"], 1)
 
 
 if __name__ == "__main__":

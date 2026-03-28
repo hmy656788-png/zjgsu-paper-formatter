@@ -20,6 +20,7 @@
   const btnFormat = $("#btnFormat");
   const btnFormatLabel = $("#btnFormatLabel");
   const processingSection = $("#processingSection");
+  const processingLive = $("#processingLive");
   const resultSection = $("#resultSection");
   const errorSection = $("#errorSection");
   const errorMessage = $("#errorMessage");
@@ -35,6 +36,14 @@
   const coverFileName = $("#coverFileName");
   const coverFileSize = $("#coverFileSize");
   const coverFileRemove = $("#coverFileRemove");
+  const coverMetaEnabled = $("#coverMetaEnabled");
+  const coverMetaPanel = $("#coverMetaPanel");
+  const coverTitleInput = $("#coverTitleInput");
+  const collegeInput = $("#collegeInput");
+  const teacherInput = $("#teacherInput");
+  const classNameInput = $("#classNameInput");
+  const studentNameInput = $("#studentNameInput");
+  const studentIdInput = $("#studentIdInput");
 
   const statInputSize = $("#statInputSize");
   const statOutputSize = $("#statOutputSize");
@@ -61,6 +70,7 @@
   let stepAnimationTimer = null;
   let resultRevealTimer = null;
   let currentRequestController = null;
+  let currentEventSource = null;
   let isSubmitting = false;
 
   // ====== 背景粒子 ======
@@ -199,9 +209,16 @@
     previewOutline.appendChild(list);
   }
 
-  function showProcessing() {
+  function setProcessingLive(message) {
+    if (processingLive) processingLive.textContent = message || "正在准备任务...";
+  }
+
+  function showProcessing(useAnimatedSteps = false) {
     stopResultReveal(); showSection(processingSection);
-    resetSteps(); steps[0].classList.add("active"); animateSteps();
+    resetSteps();
+    setStepProgress(1);
+    setProcessingLive("正在准备任务...");
+    if (useAnimatedSteps) animateSteps();
   }
 
   function showResult(data) {
@@ -211,12 +228,14 @@
     statElapsed.textContent = data.stats.elapsed;
     downloadUrl = data.download_url + "?name=" + encodeURIComponent(data.download_name);
     downloadName = data.download_name;
-    if (data.summary) {
-      renderPreview(data.summary);
+    if (data.preview || data.summary) {
+      renderPreview(data.preview || data.summary);
     }
   }
 
-  function showError(msg) { stopResultReveal(); stopStepAnimation(); showSection(errorSection); errorMessage.textContent = msg; }
+  function showError(msg) {
+    stopResultReveal(); stopStepAnimation(); closeProgressStream(); showSection(errorSection); errorMessage.textContent = msg;
+  }
 
   async function parseApiResponse(res, fb) {
     const ct = res.headers.get("content-type") || "";
@@ -231,10 +250,13 @@
   // ====== 动画 ======
   function stopResultReveal() { if (resultRevealTimer !== null) { clearTimeout(resultRevealTimer); resultRevealTimer = null; } }
   function stopStepAnimation() { if (stepAnimationTimer !== null) { clearInterval(stepAnimationTimer); stepAnimationTimer = null; } }
+  function closeProgressStream() { if (currentEventSource) { currentEventSource.close(); currentEventSource = null; } }
 
   function syncBusyState() {
-    [tabUpload, tabPaste, pasteArea, btnFormatText, fileRemove, btnFormat].forEach((el) => { if (el) el.disabled = isSubmitting; });
+    [tabUpload, tabPaste, pasteArea, btnFormatText, fileRemove, btnFormat, coverFileRemove].forEach((el) => { if (el) el.disabled = isSubmitting; });
+    [coverMetaEnabled, coverTitleInput, collegeInput, teacherInput, classNameInput, studentNameInput, studentIdInput].forEach((el) => { if (el) el.disabled = isSubmitting; });
     if (uploadZone) { if (isSubmitting) uploadZone.classList.remove("drag-over"); uploadZone.classList.toggle("is-busy", isSubmitting); }
+    if (coverZone) { if (isSubmitting) coverZone.classList.remove("drag-over"); coverZone.classList.toggle("is-busy", isSubmitting); }
   }
 
   function updateRetryLabel() {
@@ -245,20 +267,57 @@
 
   function updateFormatButton() {
     if (!btnFormatLabel) return;
-    btnFormatLabel.textContent = selectedCover ? "合并排版" : "开始排版";
+    if (selectedCover) { btnFormatLabel.textContent = "合并排版"; return; }
+    if (coverMetaEnabled && coverMetaEnabled.checked) { btnFormatLabel.textContent = "生成封面并排版"; return; }
+    btnFormatLabel.textContent = "开始排版";
+  }
+
+  function toggleCoverMetaPanel() {
+    if (!coverMetaPanel || !coverMetaEnabled) return;
+    coverMetaPanel.classList.toggle("hidden", !coverMetaEnabled.checked);
+    updateFormatButton();
+  }
+
+  function collectCoverMeta(formData) {
+    if (!coverMetaEnabled || !coverMetaEnabled.checked || !formData) return;
+    formData.append("generate_cover", "1");
+    [
+      ["cover_title", coverTitleInput],
+      ["college", collegeInput],
+      ["teacher", teacherInput],
+      ["class_name", classNameInput],
+      ["student_name", studentNameInput],
+      ["student_id", studentIdInput],
+    ].forEach(([key, input]) => {
+      const value = input && input.value ? input.value.trim() : "";
+      if (value) formData.append(key, value);
+    });
   }
 
   function beginRequest() {
     if (isSubmitting) return null;
-    stopResultReveal(); isSubmitting = true; syncBusyState();
+    stopResultReveal(); closeProgressStream(); isSubmitting = true; syncBusyState();
     currentRequestController = new AbortController();
     return currentRequestController;
   }
   function finishRequest(c) { if (currentRequestController === c) currentRequestController = null; isSubmitting = false; syncBusyState(); }
-  function abortActiveRequest() { if (currentRequestController) { currentRequestController.abort(); currentRequestController = null; } isSubmitting = false; syncBusyState(); }
+  function abortActiveRequest() {
+    if (currentRequestController) { currentRequestController.abort(); currentRequestController = null; }
+    closeProgressStream();
+    isSubmitting = false;
+    syncBusyState();
+  }
 
   function resetSteps() { stopStepAnimation(); steps.forEach((s) => s.classList.remove("active", "done")); }
   function completeSteps() { stopStepAnimation(); steps.forEach((s) => { s.classList.remove("active"); s.classList.add("done"); }); }
+  function setStepProgress(step) {
+    stopStepAnimation();
+    steps.forEach((s, index) => {
+      s.classList.remove("active", "done");
+      if (index + 1 < step) s.classList.add("done");
+      else if (index + 1 === step) s.classList.add("active");
+    });
+  }
   function animateSteps() {
     stopStepAnimation(); let cur = 1;
     stepAnimationTimer = setInterval(() => {
@@ -267,6 +326,84 @@
     }, 600);
   }
   function scheduleResult(data) { stopResultReveal(); resultRevealTimer = setTimeout(() => { resultRevealTimer = null; showResult(data); }, 500); }
+
+  async function fetchAsyncJobResult(resultUrl) {
+    const res = await fetch(resultUrl);
+    const data = await parseApiResponse(res, "获取排版结果失败，请稍后重试。");
+    if (!res.ok || !data.success) throw new Error(data.error || "获取排版结果失败，请稍后重试。");
+    return data;
+  }
+
+  function handleProgressEvent(payload) {
+    if (payload && typeof payload.step === "number") setStepProgress(payload.step);
+    const liveMessage = payload && payload.detail ? `${payload.message} · ${payload.detail}` : payload && payload.message;
+    setProcessingLive(liveMessage || "服务器正在处理文档...");
+  }
+
+  function openProgressStream(eventsUrl, resultUrl, controller) {
+    closeProgressStream();
+    let isTerminal = false;
+    const source = new EventSource(eventsUrl);
+    currentEventSource = source;
+
+    source.addEventListener("progress", (event) => {
+      try {
+        handleProgressEvent(JSON.parse(event.data || "{}"));
+      } catch {
+        setProcessingLive("服务器正在处理文档...");
+      }
+    });
+
+    source.addEventListener("complete", async () => {
+      if (isTerminal) return;
+      isTerminal = true;
+      closeProgressStream();
+      setProcessingLive("排版完成，正在整理结果...");
+      try {
+        const result = await fetchAsyncJobResult(resultUrl);
+        completeSteps();
+        scheduleResult(result);
+      } catch (err) {
+        showError((err && err.message) || "获取排版结果失败，请稍后重试。");
+      } finally {
+        finishRequest(controller);
+      }
+    });
+
+    source.addEventListener("failed", (event) => {
+      if (isTerminal) return;
+      isTerminal = true;
+      closeProgressStream();
+      let message = "排版处理失败，请稍后重试。";
+      try {
+        const payload = JSON.parse(event.data || "{}");
+        message = payload.message || message;
+      } catch {}
+      showError(message);
+      finishRequest(controller);
+    });
+
+    source.onerror = () => {
+      if (isTerminal || currentEventSource !== source) return;
+      isTerminal = true;
+      closeProgressStream();
+      showError("进度连接中断，请检查网络后重试。");
+      finishRequest(controller);
+    };
+  }
+
+  async function startAsyncJob(endpoint, fetchOptions, controller, fallbackMessage) {
+    const res = await fetch(endpoint, fetchOptions);
+    const data = await parseApiResponse(res, fallbackMessage);
+    if (!res.ok || !data.success) {
+      showError(data.error || fallbackMessage);
+      return false;
+    }
+
+    setProcessingLive("任务已创建，正在连接实时进度流...");
+    openProgressStream(data.events_url, data.result_url, controller);
+    return true;
+  }
 
   // ====== 工具 ======
   function formatSize(b) { if (b < 1024) return b + " B"; if (b < 1048576) return (b / 1024).toFixed(1) + " KB"; return (b / 1048576).toFixed(2) + " MB"; }
@@ -317,11 +454,11 @@
   }
 
   // ====== 上传排版（自动判断是否合并） ======
-  async function uploadAndFormat() {
+  async function uploadAndFormatLegacy() {
     if (!selectedFile || isSubmitting) return;
     const controller = beginRequest();
     if (!controller) return;
-    showProcessing();
+    showProcessing(true);
 
     const formData = new FormData();
     let endpoint;
@@ -334,6 +471,7 @@
     } else {
       // 无封面 → 普通排版
       formData.append("file", selectedFile);
+      collectCoverMeta(formData);
       endpoint = "/api/format";
     }
 
@@ -348,14 +486,51 @@
     } finally { finishRequest(controller); }
   }
 
+  async function uploadAndFormat() {
+    if (!selectedFile || isSubmitting) return;
+    if (typeof EventSource === "undefined") return uploadAndFormatLegacy();
+
+    const controller = beginRequest();
+    if (!controller) return;
+    showProcessing();
+
+    const formData = new FormData();
+    let endpoint;
+
+    if (selectedCover) {
+      formData.append("cover", selectedCover);
+      formData.append("body", selectedFile);
+      endpoint = "/api/format_merge_async";
+    } else {
+      formData.append("file", selectedFile);
+      collectCoverMeta(formData);
+      endpoint = "/api/format_async";
+    }
+
+    let handedOff = false;
+    try {
+      handedOff = await startAsyncJob(
+        endpoint,
+        { method: "POST", body: formData, signal: controller.signal },
+        controller,
+        "排版任务创建失败，请稍后重试。"
+      );
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+      showError("网络连接失败，请检查网络后重试。");
+    } finally {
+      if (!handedOff) finishRequest(controller);
+    }
+  }
+
   // ====== 文字排版 ======
-  async function submitPastedText() {
+  async function submitPastedTextLegacy() {
     const text = pasteArea.value.trim();
     if (!text) { showError("文本内容不能为空"); return; }
     if (isSubmitting) return;
     const controller = beginRequest();
     if (!controller) return;
-    showProcessing();
+    showProcessing(true);
     try {
       const res = await fetch("/api/format_text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }), signal: controller.signal });
       const data = await parseApiResponse(res, "排版失败");
@@ -365,6 +540,37 @@
       if (err && err.name === "AbortError") return;
       showError("网络连接失败");
     } finally { finishRequest(controller); }
+  }
+
+  async function submitPastedText() {
+    const text = pasteArea.value.trim();
+    if (!text) { showError("文本内容不能为空"); return; }
+    if (isSubmitting) return;
+    if (typeof EventSource === "undefined") return submitPastedTextLegacy();
+
+    const controller = beginRequest();
+    if (!controller) return;
+    showProcessing();
+
+    let handedOff = false;
+    try {
+      handedOff = await startAsyncJob(
+        "/api/format_text_async",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+          signal: controller.signal,
+        },
+        controller,
+        "排版任务创建失败，请稍后重试。"
+      );
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+      showError("网络连接失败，请检查网络后重试。");
+    } finally {
+      if (!handedOff) finishRequest(controller);
+    }
   }
 
   // ====== 事件绑定 ======
@@ -385,6 +591,10 @@
   coverZone.addEventListener("click", () => { if (!isSubmitting) coverInput.click(); });
   coverInput.addEventListener("change", (e) => { if (e.target.files.length > 0) selectCover(e.target.files[0]); });
   coverFileRemove.addEventListener("click", removeCover);
+  if (coverMetaEnabled) coverMetaEnabled.addEventListener("change", toggleCoverMetaPanel);
+  [coverTitleInput, collegeInput, teacherInput, classNameInput, studentNameInput, studentIdInput].forEach((input) => {
+    if (input) input.addEventListener("input", updateFormatButton);
+  });
 
   btnDownload.addEventListener("click", () => {
     if (downloadUrl) { const a = document.createElement("a"); a.href = downloadUrl; a.download = downloadName; document.body.appendChild(a); a.click(); a.remove(); }
@@ -400,5 +610,5 @@
     }
   });
 
-  syncBusyState(); updateRetryLabel(); updateFormatButton(); initParticles(); initSignatureTyping();
+  syncBusyState(); updateRetryLabel(); updateFormatButton(); toggleCoverMetaPanel(); initParticles(); initSignatureTyping();
 })();

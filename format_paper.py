@@ -64,11 +64,11 @@ def emit_progress(progress_callback, step: int, message: str, detail: str | None
 # ============================================================
 
 # --- 一级标题匹配 ---
-# 匹配规则：以 1-9 开头的数字 + 一个或多个空格 + 至少一个中英文字符
-# 示例匹配："1 引言"、"2 研究设计"、"3 模型的估计与检验"
+# 匹配规则：数字或数字. + 一个或多个空格 + 至少一个中英文字符
+# 示例匹配："1 引言"、"1. 引言"、"2 研究设计"、"3 模型的估计与检验"
 # 要求该段落仅包含这一行内容（独占一行），因此使用 ^ 和 $ 锚定
 RE_HEADING_L1 = re.compile(
-    r"^\d+\s+[A-Za-z\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9\s\-—、（）()/&.,:：]*$"
+    r"^\d+\.?\s+[A-Za-z\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9\s\-—、（）()/&.,:：]*$"
 )
 
 # --- 二级标题匹配 ---
@@ -187,6 +187,21 @@ class ParagraphType:
     ENGLISH_ABSTRACT = "english_abstract"                  # 英文摘要正文
     ENGLISH_KEYWORDS = "english_keywords"                  # 英文关键词
     BODY = "body"                    # 正文段落
+
+
+HEADING_LEVEL_BY_TYPE = {
+    ParagraphType.HEADING_L1: 0,
+    ParagraphType.HEADING_L2: 1,
+    ParagraphType.HEADING_L3: 2,
+}
+HEADING_NUMBER_PATTERNS = {
+    ParagraphType.HEADING_L1: re.compile(r"^(?P<number>\d+)(?:\.)?\s+(?P<title>.+)$"),
+    ParagraphType.HEADING_L2: re.compile(r"^(?P<number>\d+\.\d+)\s*(?P<title>.+)$"),
+    ParagraphType.HEADING_L3: re.compile(r"^(?P<number>\d+\.\d+\.\d+)\s*(?P<title>.+)$"),
+}
+HEADING_NUMBERING_NSID = "5A475355"
+HEADING_NUMBERING_TEMPLATE = "5A475355"
+HEADING_NUMBERING_LEVEL_TEXTS = ("%1", "%1.%2", "%1.%2.%3")
 
 
 # ============================================================
@@ -385,6 +400,32 @@ def find_title_paragraph_index(paragraphs) -> int | None:
     return None
 
 
+def extract_heading_numbering(text: str, para_type: str) -> tuple[str, tuple[int, ...]]:
+    """
+    从标题文本中提取编号前缀和纯标题文本。
+
+    例如：
+      - "1 引言"    -> ("引言", (1,))
+      - "1.1 背景"  -> ("背景", (1, 1))
+      - "1.1.1 假设" -> ("假设", (1, 1, 1))
+    """
+    normalized = normalize_text_for_matching(text)
+    pattern = HEADING_NUMBER_PATTERNS.get(para_type)
+    if pattern is None:
+        return normalized, ()
+
+    match = pattern.match(normalized)
+    if match is None:
+        return normalized, ()
+
+    number_text = (match.group("number") or "").rstrip(".")
+    title_text = normalize_text_for_matching(match.group("title"))
+    if not number_text or not title_text:
+        return normalized, ()
+
+    return title_text, tuple(int(part) for part in number_text.split("."))
+
+
 # ============================================================
 # 底层格式设置工具函数
 # ============================================================
@@ -458,6 +499,17 @@ def _is_list_paragraph(paragraph) -> bool:
     return p_pr is not None and p_pr.numPr is not None
 
 
+def _clear_paragraph_numbering(paragraph):
+    """移除段落原有的编号定义，避免旧模板列表样式残留。"""
+    p_pr = paragraph._element.pPr
+    if p_pr is None:
+        return
+
+    num_pr = p_pr.find(qn("w:numPr"))
+    if num_pr is not None:
+        p_pr.remove(num_pr)
+
+
 def iter_table_paragraphs(tables):
     """递归遍历所有表格单元格内的段落。"""
     for table in tables:
@@ -480,6 +532,22 @@ def iter_all_tables(tables):
 def _has_drawing(paragraph) -> bool:
     """判断段落中是否包含图片等 drawing 元素。"""
     return bool(paragraph._element.findall(".//" + qn("w:drawing")))
+
+
+def _has_equation_content(paragraph) -> bool:
+    """判断段落中是否包含 Word 公式或嵌入式公式对象。"""
+    element = paragraph._element
+    equation_tags = (
+        "{http://schemas.openxmlformats.org/officeDocument/2006/math}oMath",
+        "{http://schemas.openxmlformats.org/officeDocument/2006/math}oMathPara",
+        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}object",
+        "{urn:schemas-microsoft-com:office:office}OLEObject",
+        "{urn:schemas-microsoft-com:vml}shape",
+    )
+    return any(
+        element.findall(".//" + tag)
+        for tag in equation_tags
+    )
 
 
 def _set_paragraph_format(
@@ -553,6 +621,7 @@ def _clear_paragraph_style(paragraph, preserve_list_style: bool = False):
         return
 
     paragraph.style = "Normal"
+    _clear_paragraph_numbering(paragraph)
 
 
 def _get_primary_paragraph(container):
@@ -577,6 +646,131 @@ def _get_primary_cell_paragraph(cell):
 
     _remove_all_runs(paragraph)
     return paragraph
+
+
+def _get_next_abstract_num_id(numbering_root) -> int:
+    """返回 numbering.xml 中下一个可用的 abstractNumId。"""
+    abstract_ids = []
+    for abstract_num in numbering_root.findall("./" + qn("w:abstractNum")):
+        raw_id = abstract_num.get(qn("w:abstractNumId"))
+        if raw_id is not None:
+            abstract_ids.append(int(raw_id))
+
+    return max(abstract_ids, default=-1) + 1
+
+
+def _get_or_create_heading_numbering_abstract_id(doc) -> int:
+    """获取学术论文标题专用的多级编号定义。"""
+    cached_id = getattr(doc, "_academic_heading_abstract_num_id", None)
+    if cached_id is not None:
+        return cached_id
+
+    numbering_root = doc.part.numbering_part.numbering_definitions._numbering
+
+    for abstract_num in numbering_root.findall("./" + qn("w:abstractNum")):
+        nsid = abstract_num.find(qn("w:nsid"))
+        if nsid is not None and nsid.get(qn("w:val")) == HEADING_NUMBERING_NSID:
+            abstract_num_id = int(abstract_num.get(qn("w:abstractNumId")))
+            setattr(doc, "_academic_heading_abstract_num_id", abstract_num_id)
+            return abstract_num_id
+
+    abstract_num_id = _get_next_abstract_num_id(numbering_root)
+    abstract_num = OxmlElement("w:abstractNum")
+    abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
+
+    nsid = OxmlElement("w:nsid")
+    nsid.set(qn("w:val"), HEADING_NUMBERING_NSID)
+    abstract_num.append(nsid)
+
+    multi_level_type = OxmlElement("w:multiLevelType")
+    multi_level_type.set(qn("w:val"), "multilevel")
+    abstract_num.append(multi_level_type)
+
+    template = OxmlElement("w:tmpl")
+    template.set(qn("w:val"), HEADING_NUMBERING_TEMPLATE)
+    abstract_num.append(template)
+
+    for ilvl, level_text in enumerate(HEADING_NUMBERING_LEVEL_TEXTS):
+        lvl = OxmlElement("w:lvl")
+        lvl.set(qn("w:ilvl"), str(ilvl))
+
+        start = OxmlElement("w:start")
+        start.set(qn("w:val"), "1")
+        lvl.append(start)
+
+        num_fmt = OxmlElement("w:numFmt")
+        num_fmt.set(qn("w:val"), "decimal")
+        lvl.append(num_fmt)
+
+        suffix = OxmlElement("w:suff")
+        suffix.set(qn("w:val"), "space")
+        lvl.append(suffix)
+
+        lvl_text = OxmlElement("w:lvlText")
+        lvl_text.set(qn("w:val"), level_text)
+        lvl.append(lvl_text)
+
+        lvl_jc = OxmlElement("w:lvlJc")
+        lvl_jc.set(qn("w:val"), "left")
+        lvl.append(lvl_jc)
+
+        abstract_num.append(lvl)
+
+    children = list(numbering_root)
+    insert_at = next((index for index, child in enumerate(children) if child.tag == qn("w:num")), len(children))
+    numbering_root.insert(insert_at, abstract_num)
+    setattr(doc, "_academic_heading_abstract_num_id", abstract_num_id)
+    return abstract_num_id
+
+
+def _create_heading_numbering_instance(doc, numbering_parts: tuple[int, ...]) -> int | None:
+    """为当前标题创建一个 concrete numbering 实例，并保留原始章节号。"""
+    if not numbering_parts:
+        return None
+
+    abstract_num_id = _get_or_create_heading_numbering_abstract_id(doc)
+    numbering_root = doc.part.numbering_part.numbering_definitions._numbering
+    num = numbering_root.add_num(abstract_num_id)
+
+    for ilvl, start_value in enumerate(numbering_parts):
+        lvl_override = num.add_lvlOverride(ilvl)
+        lvl_override.add_startOverride(start_value)
+
+    return int(num.get(qn("w:numId")))
+
+
+def _apply_paragraph_numbering(paragraph, num_id: int, ilvl: int):
+    """将 concrete numbering 绑定到段落。"""
+    p_pr = paragraph._element.get_or_add_pPr()
+    num_pr = p_pr.find(qn("w:numPr"))
+
+    if num_pr is None:
+        num_pr = OxmlElement("w:numPr")
+        p_pr.append(num_pr)
+    else:
+        for child in list(num_pr):
+            num_pr.remove(child)
+
+    ilvl_element = OxmlElement("w:ilvl")
+    ilvl_element.set(qn("w:val"), str(ilvl))
+    num_pr.append(ilvl_element)
+
+    num_id_element = OxmlElement("w:numId")
+    num_id_element.set(qn("w:val"), str(num_id))
+    num_pr.append(num_id_element)
+
+
+def apply_native_heading_numbering(doc, paragraph, para_type: str, numbering_parts: tuple[int, ...]):
+    """把识别出的章节号写成 Word 原生多级编号。"""
+    level = HEADING_LEVEL_BY_TYPE.get(para_type)
+    if level is None:
+        return
+
+    num_id = _create_heading_numbering_instance(doc, numbering_parts)
+    if num_id is None:
+        return
+
+    _apply_paragraph_numbering(paragraph, num_id=num_id, ilvl=level)
 
 
 def _set_xml_borders(border_container, border_map: dict[str, dict[str, str]]):
@@ -725,23 +919,49 @@ def _set_cell_horizontal_borders(cell, *, top: bool = False, bottom: bool = Fals
     )
 
 
+def _set_table_three_line_borders(table, color: str = "000000", size: str = "10"):
+    """在表格级别设置顶线和底线，避免被单元格边框覆盖。"""
+    tbl_pr = table._tbl.tblPr
+    tbl_borders = tbl_pr.find(qn("w:tblBorders"))
+    if tbl_borders is None:
+        tbl_borders = OxmlElement("w:tblBorders")
+        tbl_pr.append(tbl_borders)
+
+    hidden = _hidden_border_attrs()
+    visible = {
+        "val": "single",
+        "sz": size,
+        "space": "0",
+        "color": color,
+    }
+    _set_xml_borders(
+        tbl_borders,
+        {
+            "top": visible,
+            "left": hidden,
+            "bottom": visible,
+            "right": hidden,
+            "insideH": hidden,
+            "insideV": hidden,
+        },
+    )
+
+
 def format_three_line_table(table):
     """将普通表格处理为学术论文常见的三线表边框。"""
     rows = list(table.rows)
     if not rows:
         return
 
-    _hide_table_borders(table)
-    last_row_index = len(rows) - 1
+    _set_table_three_line_borders(table)
 
     for row_index, row in enumerate(rows):
         is_header_row = row_index == 0
-        is_last_row = row_index == last_row_index
         for cell in row.cells:
             _set_cell_horizontal_borders(
                 cell,
-                top=is_header_row,
-                bottom=is_header_row or is_last_row,
+                top=False,
+                bottom=is_header_row,
                 size="10",
             )
 
@@ -1205,6 +1425,46 @@ def generate_cover_page(doc, info_dict):
     return True
 
 
+def prepare_cover_info(cover_info, detected_title: str) -> dict | None:
+    """整理自动封面所需信息，并为缺省标题补齐回退值。"""
+    if not isinstance(cover_info, dict):
+        return None
+
+    resolved = {}
+    for key in (
+        "title",
+        "cover_title",
+        "course_title",
+        "college",
+        "teacher",
+        "class_name",
+        "student_name",
+        "student_id",
+        "school_name",
+        "logo_path",
+        "school_name_image_path",
+    ):
+        value = cover_info.get(key)
+        if value is None:
+            continue
+        resolved[key] = str(value).strip() if isinstance(value, str) else value
+
+    fallback_title = normalize_text_for_matching(
+        str(
+            resolved.get("title")
+            or detected_title
+            or resolved.get("cover_title")
+            or resolved.get("course_title")
+            or ""
+        )
+    )
+    if not fallback_title:
+        return None
+
+    resolved["title"] = fallback_title
+    return resolved
+
+
 def insert_table_of_contents(doc, title_index: int | None, heading_count: int) -> bool:
     """在标题后插入目录标题、TOC 域和分页符。"""
     if title_index is None or heading_count < MIN_TOC_HEADING_COUNT:
@@ -1274,6 +1534,19 @@ def format_body(paragraph, in_table: bool = False):
     """
     normalized_text = normalize_text_for_matching(paragraph.text)
     _set_paragraph_outline_level(paragraph, None)
+    has_equation = _has_equation_content(paragraph)
+
+    if has_equation and not normalized_text:
+        _clear_paragraph_style(paragraph)
+        _set_paragraph_format(
+            paragraph,
+            alignment=WD_ALIGN_PARAGRAPH.LEFT if in_table else WD_ALIGN_PARAGRAPH.CENTER,
+            first_line_indent=Pt(0),
+            line_spacing=1.5,
+            line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+        )
+        _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
+        return
 
     if _has_drawing(paragraph) and not normalized_text:
         _set_paragraph_format(
@@ -1631,7 +1904,7 @@ def _append_outline_entry(outline: list[dict], para_type: str, text: str):
 # ============================================================
 # 主函数：学术论文排版
 # ============================================================
-def format_academic_paper(input_path: str, output_path: str, progress_callback=None) -> dict | bool:
+def format_academic_paper(input_path: str, output_path: str, progress_callback=None, cover_info=None) -> dict | bool:
     """
     读取未排版的 .docx 文档，根据学术论文排版规则进行格式重构，保存为新文档。
 
@@ -1666,9 +1939,9 @@ def format_academic_paper(input_path: str, output_path: str, progress_callback=N
         logger.error(f"无法读取文档 {input_path}：{e}")
         return False
 
-    return _process_document(doc, output_path, progress_callback=progress_callback)
+    return _process_document(doc, output_path, progress_callback=progress_callback, cover_info=cover_info)
 
-def format_academic_paper_from_text(text: str, output_path: str, progress_callback=None) -> dict | bool:
+def format_academic_paper_from_text(text: str, output_path: str, progress_callback=None, cover_info=None) -> dict | bool:
     """
     将纯文本内容转换为符合学术论文排版规则的 .docx 文档。
 
@@ -1694,9 +1967,9 @@ def format_academic_paper_from_text(text: str, output_path: str, progress_callba
         logger.error(f"无法从文本创建文档：{e}")
         return False
 
-    return _process_document(doc, output_path, progress_callback=progress_callback)
+    return _process_document(doc, output_path, progress_callback=progress_callback, cover_info=cover_info)
 
-def _process_document(doc, output_path: str, progress_callback=None) -> dict | bool:
+def _process_document(doc, output_path: str, progress_callback=None, cover_info=None) -> dict | bool:
     """内部处理逻辑，将 Document 对象排版并保存。"""
     # ---------- 2. 设置默认文档级字体 ----------
     emit_progress(progress_callback, 1, "正在初始化页面设置与默认样式")
@@ -1751,6 +2024,7 @@ def _process_document(doc, output_path: str, progress_callback=None) -> dict | b
     in_english_abstract = False
     figure_counter = 0
     table_counter = 0
+    equation_paragraph_count = 0
     total_paragraphs = len(doc.paragraphs)
 
     # ---------- 4. 遍历并格式化每个段落 ----------
@@ -1759,6 +2033,8 @@ def _process_document(doc, output_path: str, progress_callback=None) -> dict | b
         raw_text = paragraph.text
         text = normalize_text_for_matching(raw_text)
         para_type = ParagraphType.TITLE if i == title_index else classify_paragraph(raw_text)
+        if _has_equation_content(paragraph):
+            equation_paragraph_count += 1
 
         if total_paragraphs and (
             i == 0
@@ -1816,15 +2092,21 @@ def _process_document(doc, output_path: str, progress_callback=None) -> dict | b
 
         elif para_type == ParagraphType.HEADING_L1:
             logger.info(f"  [一级标题] 第{i+1}段: \"{text}\"")
-            format_heading_l1(paragraph, text_override=text)
+            heading_text, numbering_parts = extract_heading_numbering(text, para_type)
+            format_heading_l1(paragraph, text_override=heading_text)
+            apply_native_heading_numbering(doc, paragraph, para_type, numbering_parts)
 
         elif para_type == ParagraphType.HEADING_L2:
             logger.info(f"  [二级标题] 第{i+1}段: \"{text}\"")
-            format_heading_l2(paragraph, text_override=text)
+            heading_text, numbering_parts = extract_heading_numbering(text, para_type)
+            format_heading_l2(paragraph, text_override=heading_text)
+            apply_native_heading_numbering(doc, paragraph, para_type, numbering_parts)
 
         elif para_type == ParagraphType.HEADING_L3:
             logger.info(f"  [三级标题] 第{i+1}段: \"{text}\"")
-            format_heading_l3(paragraph, text_override=text)
+            heading_text, numbering_parts = extract_heading_numbering(text, para_type)
+            format_heading_l3(paragraph, text_override=heading_text)
+            apply_native_heading_numbering(doc, paragraph, para_type, numbering_parts)
 
         elif para_type == ParagraphType.FIGURE_CAPTION:
             figure_counter += 1
@@ -1887,6 +2169,8 @@ def _process_document(doc, output_path: str, progress_callback=None) -> dict | b
     table_paragraph_count = 0
     for paragraph in iter_table_paragraphs(doc.tables):
         table_paragraph_count += 1
+        if _has_equation_content(paragraph):
+            equation_paragraph_count += 1
         format_body(paragraph, in_table=True)
 
     all_tables = list(iter_all_tables(doc.tables))
@@ -1908,6 +2192,13 @@ def _process_document(doc, output_path: str, progress_callback=None) -> dict | b
         emit_progress(progress_callback, 3, "正在插入自动目录字段")
     insert_table_of_contents(doc, title_index, heading_count)
     resized_image_count = constrain_inline_images(doc, progress_callback=progress_callback)
+    cover_generated = False
+    resolved_cover_info = prepare_cover_info(cover_info, title_text)
+    if resolved_cover_info is not None:
+        emit_progress(progress_callback, 3, "正在生成课程论文封面")
+        cover_generated = generate_cover_page(doc, resolved_cover_info)
+        if cover_generated:
+            emit_progress(progress_callback, 3, "封面模板已插入文档首页")
 
     # ---------- 6. 保存输出文档 ----------
     emit_progress(progress_callback, 4, "正在生成输出文档")
@@ -1939,7 +2230,9 @@ def _process_document(doc, output_path: str, progress_callback=None) -> dict | b
     logger.info(f"  英文关键词：{stats[ParagraphType.ENGLISH_KEYWORDS]} 个")
     logger.info(f"  正文段落：{stats[ParagraphType.BODY]} 个")
     logger.info(f"  表格内段落：{table_paragraph_count} 个")
+    logger.info(f"  公式段落：{equation_paragraph_count} 个")
     logger.info(f"  自动缩放图片：{resized_image_count} 张")
+    logger.info(f"  自动封面：{'已生成' if cover_generated else '未生成'}")
     logger.info("=" * 50)
 
     return {
@@ -1947,7 +2240,9 @@ def _process_document(doc, output_path: str, progress_callback=None) -> dict | b
         "title_text": title_text,
         "page_setup": page_setup,
         "table_paragraphs": table_paragraph_count,
+        "equation_paragraphs": equation_paragraph_count,
         "resized_images": resized_image_count,
+        "cover_generated": cover_generated,
         "outline": outline,
     }
 

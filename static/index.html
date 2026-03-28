@@ -70,8 +70,14 @@
               <line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
           </div>
-          <h2 class="upload-title">拖拽文件到此处上传</h2>
-          <p class="upload-hint">点击此区域选择文件，或按 Ctrl+V 粘贴文件</p>
+          <h2 class="upload-title">
+            <span class="desktop-copy">拖拽文件到此处上传</span>
+            <span class="mobile-copy">点击选择 Word 文档</span>
+          </h2>
+          <p class="upload-hint">
+            <span class="desktop-copy">点击此区域选择文件，或按 Ctrl+V 粘贴文件</span>
+            <span class="mobile-copy">支持从微信、QQ、文件 App 中选择 .docx 文档</span>
+          </p>
           <p class="upload-format">支持格式：<strong>.docx</strong> · 最大 50MB</p>
           <input type="file" id="fileInput" accept=".docx" hidden />
         </div>
@@ -161,6 +167,24 @@
             </div>
           </div>
 
+          <div class="result-preview" id="resultPreview">
+            <div class="preview-panel">
+              <div class="preview-panel-head">
+                <h4 class="preview-title">这次自动完成了什么</h4>
+                <p class="preview-subtitle">把真正做过的页面设置、页眉页码和结构识别结果直接展示出来</p>
+              </div>
+              <div class="preview-highlights" id="previewHighlights"></div>
+            </div>
+
+            <div class="preview-panel">
+              <div class="preview-panel-head">
+                <h4 class="preview-title">识别到的文档结构</h4>
+                <p class="preview-subtitle">从标题层级到参考文献，快速确认工具有没有识别正确</p>
+              </div>
+              <div class="preview-outline" id="previewOutline"></div>
+            </div>
+          </div>
+
           <button class="btn-download" id="btnDownload">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -197,7 +221,7 @@
               <polyline points="1 4 1 10 7 10"/>
               <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
             </svg>
-            重新上传
+            <span id="retryLabel">重新上传</span>
           </button>
         </div>
       </section>
@@ -208,6 +232,11 @@
     <section class="rules-section">
       <h2 class="rules-title">浙工商论文排版规范</h2>
       <div class="rules-grid">
+        <div class="rule-card">
+          <div class="rule-icon rule-icon-title">T</div>
+          <h3>论文标题</h3>
+          <p>自动识别主标题，黑体加粗，小二号字，居中排版</p>
+        </div>
         <div class="rule-card">
           <div class="rule-icon rule-icon-body">Aa</div>
           <h3>正文格式</h3>

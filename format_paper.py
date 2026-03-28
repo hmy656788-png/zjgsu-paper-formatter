@@ -26,10 +26,10 @@ import logging
 from pathlib import Path
 
 from docx import Document
-from docx.shared import Pt, Cm, RGBColor
+from docx.shared import Pt, RGBColor, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml.ns import qn, nsdecls
-from docx.oxml import parse_xml
+from docx.oxml import OxmlElement, parse_xml
 
 # ============================================================
 # 日志配置
@@ -41,52 +41,37 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# 字号映射表（中国标准字号 → 磅值）
-# ============================================================
-FONT_SIZE_MAP = {
-    "初号": 42,
-    "小初": 36,
-    "一号": 26,
-    "小一": 24,
-    "二号": 22,
-    "小二": 18,
-    "三号": 16,
-    "小三": 15,
-    "四号": 14,
-    "小四": 12,
-    "五号": 10.5,
-    "小五": 9,
-    "六号": 7.5,
-    "小六": 6.5,
-    "七号": 5.5,
-    "八号": 5,
-}
-
-# ============================================================
 # 正则表达式定义（核心匹配逻辑）
 # ============================================================
 
 # --- 一级标题匹配 ---
-# 匹配规则：以 1-9 开头的数字 + 一个或多个空格 + 至少一个中文字符
+# 匹配规则：以 1-9 开头的数字 + 一个或多个空格 + 至少一个中英文字符
 # 示例匹配："1 引言"、"2 研究设计"、"3 模型的估计与检验"
 # 要求该段落仅包含这一行内容（独占一行），因此使用 ^ 和 $ 锚定
 RE_HEADING_L1 = re.compile(
-    r"^\d+\s+[\u4e00-\u9fff][\u4e00-\u9fff\w\s\-—、（）()]*$"
+    r"^\d+\s+[A-Za-z\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9\s\-—、（）()/&.,:：]*$"
 )
 
 # --- 二级标题匹配 ---
 # 匹配规则：数字.数字 + 可选空格 + 至少一个中文字符
 # 示例匹配："1.1研究背景"、"2.1 模型构建"、"3.2 数据来源与描述"
 RE_HEADING_L2 = re.compile(
-    r"^\d+\.\d+\s*[\u4e00-\u9fff][\u4e00-\u9fff\w\s\-—、（）()]*$"
+    r"^\d+\.\d+\s*[A-Za-z\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9\s\-—、（）()/&.,:：]*$"
+)
+
+# --- 三级标题匹配 ---
+# 示例匹配："1.1.1 研究假设"、"2.3.4 稳健性检验"
+RE_HEADING_L3 = re.compile(
+    r"^\d+\.\d+\.\d+\s*[A-Za-z\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9\s\-—、（）()/&.,:：]*$"
 )
 
 # --- 图表标题匹配 ---
-# 匹配规则：以 "图" 或 "表" 开头 + 可选空格 + 数字 + 后续内容（较短段落）
-# 示例匹配："表 1 变量定义"、"图 1 散点图"、"表1 回归结果"
-# 限制总长度不超过 40 个字符，以避免误匹配正文段落
-RE_FIGURE_TABLE = re.compile(
-    r"^[图表]\s*\d+[\s\.\-—:：]*.{0,35}$"
+# 支持 "图 1 xxx"、"【图9】xxx"、"表8 xxx"、"图n" 等草稿写法
+RE_FIGURE_CAPTION = re.compile(
+    r"^(?:【\s*)?图\s*(?P<index>\d+|[A-Za-z]+|[一二三四五六七八九十百千万]+)(?:\s*[】\]\)])?\s*[:：.\-—、]?\s*(?P<caption>.*)$"
+)
+RE_TABLE_CAPTION = re.compile(
+    r"^(?:【\s*)?表\s*(?P<index>\d+|[A-Za-z]+|[一二三四五六七八九十百千万]+)(?:\s*[】\]\)])?\s*[:：.\-—、]?\s*(?P<caption>.*)$"
 )
 
 # --- 摘要标识匹配 ---
@@ -96,6 +81,35 @@ RE_ABSTRACT = re.compile(r"^摘\s*要\s*[:：]?\s*")
 # --- 关键词标识匹配 ---
 # 匹配规则：段落起始处包含 "关键词" + 可选的标点符号
 RE_KEYWORDS = re.compile(r"^关\s*键\s*词\s*[:：]?\s*")
+RE_REFERENCES_HEADING = re.compile(r"^参\s*考\s*文\s*献\s*$")
+RE_SECTION_HEADING = re.compile(
+    r"^(致谢|附录|作者简介|基金项目|英文摘要|abstract|acknowledg(?:e)?ments?)\s*$",
+    re.IGNORECASE,
+)
+RE_REFERENCE_ENTRY_TEXT = re.compile(
+    r"^(?:\[\d+\]|\(\d+\)|（\d+）|\d+\.\s*|\d+、\s*).+"
+)
+RE_TITLE_METADATA_PREFIX = re.compile(
+    r"^(作者|姓名|学院|学校|专业|指导教师|导师|学号|班级|单位|联系方式|电话|邮箱|电子邮箱|email|e-mail)\s*[:：]",
+    re.IGNORECASE,
+)
+
+PAGE_LAYOUT = {
+    "page_size": "A4",
+    "page_width_cm": 21.0,
+    "page_height_cm": 29.7,
+    "margins_cm": {
+        "top": 2.54,
+        "bottom": 2.54,
+        "left": 3.18,
+        "right": 3.18,
+    },
+    "header_distance_cm": 1.5,
+    "footer_distance_cm": 1.5,
+}
+DEFAULT_HEADER_TEXT = "浙江工商大学学术论文"
+RUNNING_HEADER_MAX_LENGTH = 28
+CAPTION_MAX_LENGTH = 60
 
 
 # ============================================================
@@ -103,9 +117,15 @@ RE_KEYWORDS = re.compile(r"^关\s*键\s*词\s*[:：]?\s*")
 # ============================================================
 class ParagraphType:
     """段落类型常量"""
+    TITLE = "title"                  # 论文标题
     HEADING_L1 = "heading_l1"        # 一级标题
     HEADING_L2 = "heading_l2"        # 二级标题
-    FIGURE_TABLE = "figure_table"    # 图表标题
+    HEADING_L3 = "heading_l3"        # 三级标题
+    FIGURE_CAPTION = "figure_caption"  # 图标题
+    TABLE_CAPTION = "table_caption"    # 表标题
+    SECTION_HEADING = "section_heading"  # 非编号章节标题（如致谢/附录）
+    REFERENCES_HEADING = "references_heading"  # 参考文献标题
+    REFERENCE_ENTRY = "reference_entry"        # 参考文献条目
     ABSTRACT = "abstract"            # 摘要段落
     KEYWORDS = "keywords"            # 关键词段落
     BODY = "body"                    # 正文段落
@@ -121,10 +141,13 @@ def classify_paragraph(text: str) -> str:
     分类优先级（从高到低）：
       1. 摘要 → 包含"摘要："开头
       2. 关键词 → 包含"关键词："开头
-      3. 一级标题 → "数字 空格 中文" 格式
-      4. 二级标题 → "数字.数字 中文" 格式
-      5. 图表标题 → "图/表 数字" 开头的短段落
-      6. 正文 → 以上都不匹配时的默认类型
+      3. 参考文献标题 → "参考文献"
+      4. 非编号章节标题 → "致谢"、"附录" 等独占标题
+      5. 一级标题 → "数字 空格 中英文" 格式
+      6. 二级标题 → "数字.数字 中英文" 格式
+      7. 三级标题 → "数字.数字.数字 中英文" 格式
+      8. 图标题 / 表标题 → "图 1"、"【图9】"、"表8" 等短标题
+      9. 正文 → 以上都不匹配时的默认类型
 
     Args:
         text: 段落的纯文本内容（已 strip）
@@ -132,7 +155,7 @@ def classify_paragraph(text: str) -> str:
     Returns:
         ParagraphType 常量字符串
     """
-    stripped = text.strip()
+    stripped = normalize_text_for_matching(text)
 
     if not stripped:
         return ParagraphType.BODY  # 空段落当作正文处理
@@ -144,6 +167,12 @@ def classify_paragraph(text: str) -> str:
     if RE_KEYWORDS.match(stripped):
         return ParagraphType.KEYWORDS
 
+    if RE_REFERENCES_HEADING.match(stripped):
+        return ParagraphType.REFERENCES_HEADING
+
+    if RE_SECTION_HEADING.match(stripped):
+        return ParagraphType.SECTION_HEADING
+
     # 匹配一级标题（注意：先匹配一级，再匹配二级，避免误判）
     if RE_HEADING_L1.match(stripped):
         return ParagraphType.HEADING_L1
@@ -152,18 +181,141 @@ def classify_paragraph(text: str) -> str:
     if RE_HEADING_L2.match(stripped):
         return ParagraphType.HEADING_L2
 
-    # 匹配图表标题
-    if RE_FIGURE_TABLE.match(stripped):
-        return ParagraphType.FIGURE_TABLE
+    # 匹配三级标题
+    if RE_HEADING_L3.match(stripped):
+        return ParagraphType.HEADING_L3
+
+    caption_match = match_caption(stripped)
+    if caption_match:
+        return caption_match[0]
 
     # 默认为正文
     return ParagraphType.BODY
 
 
+def split_text_to_paragraphs(text: str) -> list[str]:
+    """
+    规范化纯文本输入并拆分为段落列表。
+
+    - 统一处理 Windows/macOS/Linux 换行符
+    - 保留中间空行，便于在导出的文档中保留段落间距
+    - 避免把换行控制字符残留到段落正文里
+    """
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+    lines = normalized.split("\n")
+
+    while lines and lines[-1] == "":
+        lines.pop()
+
+    return lines or [""]
+
+
+def normalize_text_for_matching(text: str) -> str:
+    """
+    规范化段落文本，便于处理软回车、全角空格和多个连续空白。
+
+    对标题、图表标题等“独占一行”的识别尤其重要。
+    """
+    normalized = (text or "").replace("\r", "\n").replace("\v", "\n").replace("\u00a0", " ").replace("\u3000", " ")
+    normalized = re.sub(r"\n+", " ", normalized)
+    normalized = re.sub(r"[ \t]+", " ", normalized)
+    return normalized.strip()
+
+
+def match_caption(text: str):
+    """
+    识别图/表标题，并返回类型、匹配结果和规范化后的文本。
+
+    通过长度限制降低误把正文识别为图表标题的风险。
+    """
+    normalized = normalize_text_for_matching(text)
+    if not normalized or len(normalized) > CAPTION_MAX_LENGTH:
+        return None
+
+    figure_match = RE_FIGURE_CAPTION.match(normalized)
+    if figure_match:
+        return ParagraphType.FIGURE_CAPTION, figure_match, normalized
+
+    table_match = RE_TABLE_CAPTION.match(normalized)
+    if table_match:
+        return ParagraphType.TABLE_CAPTION, table_match, normalized
+
+    return None
+
+
+def rebuild_caption_text(kind: str, number: int, match: re.Match) -> str:
+    """按照统一编号规则重建图/表标题文本。"""
+    label = "图" if kind == ParagraphType.FIGURE_CAPTION else "表"
+    caption = (match.group("caption") or "").strip()
+    return f"{label} {number}" if not caption else f"{label} {number} {caption}"
+
+
+def is_title_candidate(text: str) -> bool:
+    """判断一个段落是否像论文标题。"""
+    stripped = normalize_text_for_matching(text)
+
+    if not stripped:
+        return False
+
+    if not 6 <= len(stripped) <= 40:
+        return False
+
+    if stripped.endswith(("。", "！", "？", "!", "?", "；", ";")):
+        return False
+
+    if "@" in stripped or RE_TITLE_METADATA_PREFIX.match(stripped):
+        return False
+
+    return classify_paragraph(stripped) == ParagraphType.BODY
+
+
+def is_reference_entry_text(text: str) -> bool:
+    """判断参考文献段落是否具备常见的编号前缀。"""
+    return bool(RE_REFERENCE_ENTRY_TEXT.match(normalize_text_for_matching(text)))
+
+
+def find_title_paragraph_index(paragraphs) -> int | None:
+    """
+    尝试识别论文主标题。
+
+    规则保持保守：
+    - 只考虑前 3 个非空段落中的候选项
+    - 段落本身必须像标题
+    - 后续 3 个非空段落内需要出现“摘要”或“关键词”
+    """
+    non_empty = [
+        (index, normalize_text_for_matching(paragraph.text))
+        for index, paragraph in enumerate(paragraphs)
+        if normalize_text_for_matching(paragraph.text)
+    ]
+
+    if not non_empty:
+        return None
+
+    for candidate_position, (candidate_index, candidate_text) in enumerate(non_empty[:3]):
+        if not is_title_candidate(candidate_text):
+            continue
+
+        for _, text in non_empty[candidate_position + 1:candidate_position + 4]:
+            para_type = classify_paragraph(text)
+            if para_type in {ParagraphType.ABSTRACT, ParagraphType.KEYWORDS}:
+                return candidate_index
+
+            if para_type in {
+                ParagraphType.HEADING_L1,
+                ParagraphType.HEADING_L2,
+                ParagraphType.FIGURE_CAPTION,
+                ParagraphType.TABLE_CAPTION,
+            }:
+                break
+
+    return None
+
+
 # ============================================================
 # 底层格式设置工具函数
 # ============================================================
-def _set_run_font(run, cn_font: str, en_font: str, size_pt: float, bold: bool = False, color: RGBColor = None):
+def _set_run_font(run, cn_font: str, en_font: str, size_pt: float, bold: bool | None = None, color: RGBColor = None):
     """
     设置 run 级别的字体属性。
 
@@ -175,11 +327,12 @@ def _set_run_font(run, cn_font: str, en_font: str, size_pt: float, bold: bool = 
         cn_font:  中文字体名称（如 "宋体"、"黑体"）
         en_font:  西文字体名称（如 "Times New Roman"）
         size_pt:  字号磅值
-        bold:     是否加粗
+        bold:     是否加粗；传 None 时保留原有加粗状态
         color:    字体颜色（可选）
     """
     run.font.size = Pt(size_pt)
-    run.font.bold = bold
+    if bold is not None:
+        run.font.bold = bold
     run.font.name = en_font  # 设置西文（Latin）字体
 
     if color:
@@ -197,6 +350,54 @@ def _set_run_font(run, cn_font: str, en_font: str, size_pt: float, bold: bool = 
     r_fonts.set(qn("w:ascii"), en_font)
     r_fonts.set(qn("w:hAnsi"), en_font)
     r_fonts.set(qn("w:cs"), en_font)  # 复杂脚本字体也设为西文字体
+
+
+def _remove_all_runs(paragraph):
+    """删除段落中已有的 run，便于重建页眉页脚等结构。"""
+    for run in list(paragraph.runs):
+        run._element.getparent().remove(run._element)
+
+
+def _replace_paragraph_text(paragraph, text: str):
+    """安全重建纯文本段落内容。仅用于标题、图表标题等纯文本段落。"""
+    _remove_all_runs(paragraph)
+    if text:
+        paragraph.add_run(text)
+
+
+def _apply_run_fonts(paragraph, cn_font: str, en_font: str, size_pt: float, bold: bool | None = None):
+    """遍历段落中所有 run，统一设置中西文字体。"""
+    for run in paragraph.runs:
+        current_bold = run.font.bold if bold is None else bold
+        _set_run_font(run, cn_font=cn_font, en_font=en_font, size_pt=size_pt, bold=current_bold)
+
+
+def _is_list_paragraph(paragraph) -> bool:
+    """判断段落是否为项目符号/编号列表，尽量保留其原有列表样式和缩进。"""
+    style_name = ""
+    if paragraph.style is not None:
+        style_name = (paragraph.style.name or "").lower()
+
+    if style_name.startswith("list"):
+        return True
+
+    p_pr = paragraph._element.pPr
+    return p_pr is not None and p_pr.numPr is not None
+
+
+def iter_table_paragraphs(tables):
+    """递归遍历所有表格单元格内的段落。"""
+    for table in tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    yield paragraph
+                yield from iter_table_paragraphs(cell.tables)
+
+
+def _has_drawing(paragraph) -> bool:
+    """判断段落中是否包含图片等 drawing 元素。"""
+    return bool(paragraph._element.findall(".//" + qn("w:drawing")))
 
 
 def _set_paragraph_format(
@@ -244,18 +445,123 @@ def _set_paragraph_format(
         pf.line_spacing_rule = line_spacing_rule
 
 
-def _clear_paragraph_style(paragraph):
+def _clear_paragraph_style(paragraph, preserve_list_style: bool = False):
     """
     清除段落的已有样式设置，防止模板样式干扰排版。
     将段落样式重置为 Normal。
     """
+    if preserve_list_style and _is_list_paragraph(paragraph):
+        return
+
     paragraph.style = "Normal"
+
+
+def _get_primary_paragraph(container):
+    """获取页眉/页脚中的主段落，并清理多余段落。"""
+    paragraphs = list(container.paragraphs)
+    paragraph = paragraphs[0] if paragraphs else container.add_paragraph()
+
+    for extra in paragraphs[1:]:
+        extra._element.getparent().remove(extra._element)
+
+    _remove_all_runs(paragraph)
+    return paragraph
+
+
+def _append_page_number_field(paragraph):
+    """在页脚插入 Word 自动页码字段。"""
+    size_pt = 10.5
+
+    fld_char_begin = OxmlElement("w:fldChar")
+    fld_char_begin.set(qn("w:fldCharType"), "begin")
+    run_begin = paragraph.add_run()
+    _set_run_font(run_begin, cn_font="宋体", en_font="Times New Roman", size_pt=size_pt)
+    run_begin._r.append(fld_char_begin)
+
+    instr_text = OxmlElement("w:instrText")
+    instr_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    instr_text.text = "PAGE"
+    run_instr = paragraph.add_run()
+    _set_run_font(run_instr, cn_font="宋体", en_font="Times New Roman", size_pt=size_pt)
+    run_instr._r.append(instr_text)
+
+    fld_char_separate = OxmlElement("w:fldChar")
+    fld_char_separate.set(qn("w:fldCharType"), "separate")
+    run_separate = paragraph.add_run()
+    _set_run_font(run_separate, cn_font="宋体", en_font="Times New Roman", size_pt=size_pt)
+    run_separate._r.append(fld_char_separate)
+
+    run_text = paragraph.add_run("1")
+    _set_run_font(run_text, cn_font="宋体", en_font="Times New Roman", size_pt=size_pt)
+
+    fld_char_end = OxmlElement("w:fldChar")
+    fld_char_end.set(qn("w:fldCharType"), "end")
+    run_end = paragraph.add_run()
+    _set_run_font(run_end, cn_font="宋体", en_font="Times New Roman", size_pt=size_pt)
+    run_end._r.append(fld_char_end)
+
+
+def apply_document_layout(doc, header_text: str) -> dict:
+    """统一设置纸张、页边距、页眉和页码。"""
+    raw_header = (header_text or "").strip()
+    if not raw_header:
+        header_value = DEFAULT_HEADER_TEXT
+    elif len(raw_header) <= RUNNING_HEADER_MAX_LENGTH:
+        header_value = raw_header
+    else:
+        header_value = f"{raw_header[:RUNNING_HEADER_MAX_LENGTH - 3].rstrip()}..."
+
+    for section in doc.sections:
+        section.page_width = Cm(PAGE_LAYOUT["page_width_cm"])
+        section.page_height = Cm(PAGE_LAYOUT["page_height_cm"])
+        section.top_margin = Cm(PAGE_LAYOUT["margins_cm"]["top"])
+        section.bottom_margin = Cm(PAGE_LAYOUT["margins_cm"]["bottom"])
+        section.left_margin = Cm(PAGE_LAYOUT["margins_cm"]["left"])
+        section.right_margin = Cm(PAGE_LAYOUT["margins_cm"]["right"])
+        section.header_distance = Cm(PAGE_LAYOUT["header_distance_cm"])
+        section.footer_distance = Cm(PAGE_LAYOUT["footer_distance_cm"])
+        section.header.is_linked_to_previous = False
+        section.footer.is_linked_to_previous = False
+
+        header_paragraph = _get_primary_paragraph(section.header)
+        _clear_paragraph_style(header_paragraph)
+        _set_paragraph_format(
+            header_paragraph,
+            alignment=WD_ALIGN_PARAGRAPH.CENTER,
+            first_line_indent=Pt(0),
+            line_spacing=1.0,
+            line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+        )
+        header_run = header_paragraph.add_run(header_value)
+        _set_run_font(header_run, cn_font="宋体", en_font="Times New Roman", size_pt=10.5)
+
+        footer_paragraph = _get_primary_paragraph(section.footer)
+        _clear_paragraph_style(footer_paragraph)
+        _set_paragraph_format(
+            footer_paragraph,
+            alignment=WD_ALIGN_PARAGRAPH.CENTER,
+            first_line_indent=Pt(0),
+            line_spacing=1.0,
+            line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+        )
+        _append_page_number_field(footer_paragraph)
+
+    return {
+        "page_size": PAGE_LAYOUT["page_size"],
+        "page_width_cm": PAGE_LAYOUT["page_width_cm"],
+        "page_height_cm": PAGE_LAYOUT["page_height_cm"],
+        "margins_cm": PAGE_LAYOUT["margins_cm"].copy(),
+        "header_distance_cm": PAGE_LAYOUT["header_distance_cm"],
+        "footer_distance_cm": PAGE_LAYOUT["footer_distance_cm"],
+        "header_text": header_value,
+        "page_number_position": "footer_center",
+    }
 
 
 # ============================================================
 # 各类型段落的格式化函数
 # ============================================================
-def format_body(paragraph):
+def format_body(paragraph, in_table: bool = False):
     """
     正文格式：
       - 中文字体：宋体
@@ -264,20 +570,60 @@ def format_body(paragraph):
       - 首行缩进：2 个中文字符（约 0.74cm × 2 ≈ 对于小四号字约 24pt）
       - 行距：1.5 倍行距
     """
+    normalized_text = normalize_text_for_matching(paragraph.text)
+
+    if _has_drawing(paragraph) and not normalized_text:
+        _set_paragraph_format(
+            paragraph,
+            alignment=paragraph.paragraph_format.alignment or WD_ALIGN_PARAGRAPH.CENTER,
+            first_line_indent=Pt(0),
+        )
+        _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
+        return
+
+    if _is_list_paragraph(paragraph):
+        # 列表段落保留原有项目符号/编号样式，仅统一行距和字体。
+        pf = paragraph.paragraph_format
+        pf.line_spacing = 1.5
+        pf.line_spacing_rule = WD_LINE_SPACING.MULTIPLE
+    else:
+        _clear_paragraph_style(paragraph)
+        _set_paragraph_format(
+            paragraph,
+            alignment=WD_ALIGN_PARAGRAPH.LEFT if in_table else WD_ALIGN_PARAGRAPH.JUSTIFY,
+            first_line_indent=Pt(0) if in_table else Pt(24),
+            line_spacing=1.5,
+            line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+        )
+
+    _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
+
+
+def format_title(paragraph, text_override: str | None = None):
+    """
+    论文标题格式：
+      - 字体：黑体
+      - 字号：小二（18pt）
+      - 加粗
+      - 居中对齐
+      - 段后适当留白，和摘要区隔开
+    """
     _clear_paragraph_style(paragraph)
+    if text_override is not None:
+        _replace_paragraph_text(paragraph, text_override)
     _set_paragraph_format(
         paragraph,
-        alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,  # 两端对齐（学术论文常用）
-        first_line_indent=Pt(24),               # 2个中文字符（小四12pt × 2 = 24pt）
+        alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        first_line_indent=Pt(0),
+        space_after=Pt(18),
         line_spacing=1.5,
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
 
-    for run in paragraph.runs:
-        _set_run_font(run, cn_font="宋体", en_font="Times New Roman", size_pt=12)
+    _apply_run_fonts(paragraph, cn_font="黑体", en_font="Times New Roman", size_pt=18, bold=True)
 
 
-def format_heading_l1(paragraph):
+def format_heading_l1(paragraph, text_override: str | None = None):
     """
     一级标题格式：
       - 字体：黑体
@@ -287,6 +633,8 @@ def format_heading_l1(paragraph):
       - 段前段后：各 1 行（对于三号字 16pt，1 行间距 ≈ 16pt）
     """
     _clear_paragraph_style(paragraph)
+    if text_override is not None:
+        _replace_paragraph_text(paragraph, text_override)
     _set_paragraph_format(
         paragraph,
         alignment=WD_ALIGN_PARAGRAPH.CENTER,
@@ -297,11 +645,10 @@ def format_heading_l1(paragraph):
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
 
-    for run in paragraph.runs:
-        _set_run_font(run, cn_font="黑体", en_font="Times New Roman", size_pt=16, bold=True)
+    _apply_run_fonts(paragraph, cn_font="黑体", en_font="Times New Roman", size_pt=16, bold=True)
 
 
-def format_heading_l2(paragraph):
+def format_heading_l2(paragraph, text_override: str | None = None):
     """
     二级标题格式：
       - 字体：黑体
@@ -311,6 +658,8 @@ def format_heading_l2(paragraph):
       - 段前段后：各 0.5 行（约 7pt）
     """
     _clear_paragraph_style(paragraph)
+    if text_override is not None:
+        _replace_paragraph_text(paragraph, text_override)
     _set_paragraph_format(
         paragraph,
         alignment=WD_ALIGN_PARAGRAPH.LEFT,
@@ -321,11 +670,35 @@ def format_heading_l2(paragraph):
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
 
-    for run in paragraph.runs:
-        _set_run_font(run, cn_font="黑体", en_font="Times New Roman", size_pt=14, bold=True)
+    _apply_run_fonts(paragraph, cn_font="黑体", en_font="Times New Roman", size_pt=14, bold=True)
 
 
-def format_figure_table(paragraph):
+def format_heading_l3(paragraph, text_override: str | None = None):
+    """
+    三级标题格式：
+      - 字体：宋体
+      - 字号：小四（12pt）
+      - 加粗
+      - 左对齐
+      - 段前段后：各 0.5 行
+    """
+    _clear_paragraph_style(paragraph)
+    if text_override is not None:
+        _replace_paragraph_text(paragraph, text_override)
+    _set_paragraph_format(
+        paragraph,
+        alignment=WD_ALIGN_PARAGRAPH.LEFT,
+        first_line_indent=Pt(0),
+        space_before=Pt(6),
+        space_after=Pt(6),
+        line_spacing=1.5,
+        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+    )
+
+    _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12, bold=True)
+
+
+def format_figure_table(paragraph, text_override: str | None = None):
     """
     图表标题格式：
       - 字体：黑体
@@ -334,6 +707,8 @@ def format_figure_table(paragraph):
       - 取消首行缩进
     """
     _clear_paragraph_style(paragraph)
+    if text_override is not None:
+        _replace_paragraph_text(paragraph, text_override)
     _set_paragraph_format(
         paragraph,
         alignment=WD_ALIGN_PARAGRAPH.CENTER,
@@ -342,8 +717,7 @@ def format_figure_table(paragraph):
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
 
-    for run in paragraph.runs:
-        _set_run_font(run, cn_font="黑体", en_font="Times New Roman", size_pt=10.5)
+    _apply_run_fonts(paragraph, cn_font="黑体", en_font="Times New Roman", size_pt=10.5)
 
 
 def format_abstract_or_keywords(paragraph, label_pattern: re.Pattern):
@@ -397,14 +771,54 @@ def format_abstract_or_keywords(paragraph, label_pattern: re.Pattern):
             _set_run_font(run_body, cn_font="宋体", en_font="Times New Roman", size_pt=12, bold=False)
     else:
         # 无法匹配标签时，整体按正文格式处理
-        for run in paragraph.runs:
-            _set_run_font(run, cn_font="宋体", en_font="Times New Roman", size_pt=12)
+        _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
+
+
+def format_reference_entry(paragraph):
+    """
+    参考文献条目格式：
+      - 宋体 / Times New Roman，小四号
+      - 悬挂缩进 2 个字符
+      - 1.5 倍行距
+    """
+    _clear_paragraph_style(paragraph)
+    _set_paragraph_format(
+        paragraph,
+        alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
+        first_line_indent=Pt(-24),
+        space_after=Pt(3),
+        line_spacing=1.5,
+        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+    )
+    paragraph.paragraph_format.left_indent = Pt(24)
+
+    _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
+
+
+def _append_outline_entry(outline: list[dict], para_type: str, text: str):
+    """记录识别到的结构化大纲，供前端预览展示。"""
+    if not text:
+        return
+
+    level = {
+        ParagraphType.TITLE: "title",
+        ParagraphType.HEADING_L1: "h1",
+        ParagraphType.HEADING_L2: "h2",
+        ParagraphType.HEADING_L3: "h3",
+        ParagraphType.SECTION_HEADING: "section",
+        ParagraphType.REFERENCES_HEADING: "references",
+    }.get(para_type)
+
+    if level is None:
+        return
+
+    outline.append({"level": level, "text": text})
 
 
 # ============================================================
 # 主函数：学术论文排版
 # ============================================================
-def format_academic_paper(input_path: str, output_path: str) -> bool:
+def format_academic_paper(input_path: str, output_path: str) -> dict | bool:
     """
     读取未排版的 .docx 文档，根据学术论文排版规则进行格式重构，保存为新文档。
 
@@ -435,7 +849,7 @@ def format_academic_paper(input_path: str, output_path: str) -> bool:
 
     return _process_document(doc, output_path)
 
-def format_academic_paper_from_text(text: str, output_path: str) -> bool:
+def format_academic_paper_from_text(text: str, output_path: str) -> dict | bool:
     """
     将纯文本内容转换为符合学术论文排版规则的 .docx 文档。
 
@@ -448,11 +862,8 @@ def format_academic_paper_from_text(text: str, output_path: str) -> bool:
     """
     try:
         doc = Document()
-        lines = text.split('\n')
-        for line in lines:
-            # 忽略完全空白的行，或者你也可以保留空行作为段落
-            if line.strip() or True: 
-                doc.add_paragraph(line)
+        for line in split_text_to_paragraphs(text):
+            doc.add_paragraph(line)
         logger.info(f"成功从文本创建文档（共 {len(doc.paragraphs)} 个段落）")
     except Exception as e:
         logger.error(f"无法从文本创建文档：{e}")
@@ -460,7 +871,7 @@ def format_academic_paper_from_text(text: str, output_path: str) -> bool:
 
     return _process_document(doc, output_path)
 
-def _process_document(doc, output_path: str) -> bool:
+def _process_document(doc, output_path: str) -> dict | bool:
     """内部处理逻辑，将 Document 对象排版并保存。"""
     # ---------- 2. 设置默认文档级字体 ----------
     try:
@@ -480,31 +891,96 @@ def _process_document(doc, output_path: str) -> bool:
 
     # ---------- 3. 统计信息 ----------
     stats = {
+        ParagraphType.TITLE: 0,
         ParagraphType.HEADING_L1: 0,
         ParagraphType.HEADING_L2: 0,
-        ParagraphType.FIGURE_TABLE: 0,
+        ParagraphType.HEADING_L3: 0,
+        ParagraphType.FIGURE_CAPTION: 0,
+        ParagraphType.TABLE_CAPTION: 0,
+        ParagraphType.SECTION_HEADING: 0,
+        ParagraphType.REFERENCES_HEADING: 0,
+        ParagraphType.REFERENCE_ENTRY: 0,
         ParagraphType.ABSTRACT: 0,
         ParagraphType.KEYWORDS: 0,
         ParagraphType.BODY: 0,
     }
 
+    title_index = find_title_paragraph_index(doc.paragraphs)
+    title_text = ""
+    if title_index is not None:
+        title_text = normalize_text_for_matching(doc.paragraphs[title_index].text)
+
+    page_setup = apply_document_layout(doc, title_text)
+    outline = []
+    in_references = False
+    figure_counter = 0
+    table_counter = 0
+
     # ---------- 4. 遍历并格式化每个段落 ----------
     for i, paragraph in enumerate(doc.paragraphs):
-        text = paragraph.text.strip()
-        para_type = classify_paragraph(text)
-        stats[para_type] += 1
+        raw_text = paragraph.text
+        text = normalize_text_for_matching(raw_text)
+        para_type = ParagraphType.TITLE if i == title_index else classify_paragraph(raw_text)
 
-        if para_type == ParagraphType.HEADING_L1:
+        if para_type == ParagraphType.REFERENCES_HEADING:
+            in_references = True
+        elif in_references and text:
+            if para_type in {
+                ParagraphType.HEADING_L1,
+                ParagraphType.HEADING_L2,
+                ParagraphType.HEADING_L3,
+                ParagraphType.SECTION_HEADING,
+            }:
+                in_references = False
+            elif is_reference_entry_text(text):
+                para_type = ParagraphType.REFERENCE_ENTRY
+            else:
+                in_references = False
+
+        stats[para_type] += 1
+        _append_outline_entry(outline, para_type, text)
+
+        if para_type == ParagraphType.TITLE:
+            logger.info(f"  [论文标题] 第{i+1}段: \"{text}\"")
+            format_title(paragraph, text_override=text)
+
+        elif para_type == ParagraphType.HEADING_L1:
             logger.info(f"  [一级标题] 第{i+1}段: \"{text}\"")
-            format_heading_l1(paragraph)
+            format_heading_l1(paragraph, text_override=text)
 
         elif para_type == ParagraphType.HEADING_L2:
             logger.info(f"  [二级标题] 第{i+1}段: \"{text}\"")
-            format_heading_l2(paragraph)
+            format_heading_l2(paragraph, text_override=text)
 
-        elif para_type == ParagraphType.FIGURE_TABLE:
-            logger.info(f"  [图表标题] 第{i+1}段: \"{text}\"")
-            format_figure_table(paragraph)
+        elif para_type == ParagraphType.HEADING_L3:
+            logger.info(f"  [三级标题] 第{i+1}段: \"{text}\"")
+            format_heading_l3(paragraph, text_override=text)
+
+        elif para_type == ParagraphType.FIGURE_CAPTION:
+            figure_counter += 1
+            caption_match = match_caption(raw_text)
+            caption_text = rebuild_caption_text(ParagraphType.FIGURE_CAPTION, figure_counter, caption_match[1])
+            logger.info(f"  [图标题] 第{i+1}段: \"{caption_text}\"")
+            format_figure_table(paragraph, text_override=caption_text)
+
+        elif para_type == ParagraphType.TABLE_CAPTION:
+            table_counter += 1
+            caption_match = match_caption(raw_text)
+            caption_text = rebuild_caption_text(ParagraphType.TABLE_CAPTION, table_counter, caption_match[1])
+            logger.info(f"  [表标题] 第{i+1}段: \"{caption_text}\"")
+            format_figure_table(paragraph, text_override=caption_text)
+
+        elif para_type == ParagraphType.SECTION_HEADING:
+            logger.info(f"  [非编号章节标题] 第{i+1}段: \"{text}\"")
+            format_heading_l1(paragraph, text_override=text)
+
+        elif para_type == ParagraphType.REFERENCES_HEADING:
+            logger.info(f"  [参考文献标题] 第{i+1}段: \"{text}\"")
+            format_heading_l1(paragraph, text_override=text)
+
+        elif para_type == ParagraphType.REFERENCE_ENTRY:
+            logger.info(f"  [参考文献条目] 第{i+1}段: \"{text[:30]}...\"")
+            format_reference_entry(paragraph)
 
         elif para_type == ParagraphType.ABSTRACT:
             logger.info(f"  [摘要段落] 第{i+1}段: \"{text[:30]}...\"")
@@ -518,7 +994,13 @@ def _process_document(doc, output_path: str) -> bool:
             # 正文段落（含空段落）
             format_body(paragraph)
 
-    # ---------- 5. 保存输出文档 ----------
+    # ---------- 5. 处理表格内段落 ----------
+    table_paragraph_count = 0
+    for paragraph in iter_table_paragraphs(doc.tables):
+        table_paragraph_count += 1
+        format_body(paragraph, in_table=True)
+
+    # ---------- 6. 保存输出文档 ----------
     try:
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -528,18 +1010,31 @@ def _process_document(doc, output_path: str) -> bool:
         logger.error(f"无法保存文档 {output_path}：{e}")
         return False
 
-    # ---------- 6. 输出统计摘要 ----------
+    # ---------- 7. 输出统计摘要 ----------
     logger.info("=" * 50)
     logger.info("排版统计：")
+    logger.info(f"  论文标题：{stats[ParagraphType.TITLE]} 个")
     logger.info(f"  一级标题：{stats[ParagraphType.HEADING_L1]} 个")
     logger.info(f"  二级标题：{stats[ParagraphType.HEADING_L2]} 个")
-    logger.info(f"  图表标题：{stats[ParagraphType.FIGURE_TABLE]} 个")
+    logger.info(f"  三级标题：{stats[ParagraphType.HEADING_L3]} 个")
+    logger.info(f"  图标题：{stats[ParagraphType.FIGURE_CAPTION]} 个")
+    logger.info(f"  表标题：{stats[ParagraphType.TABLE_CAPTION]} 个")
+    logger.info(f"  非编号章节标题：{stats[ParagraphType.SECTION_HEADING]} 个")
+    logger.info(f"  参考文献标题：{stats[ParagraphType.REFERENCES_HEADING]} 个")
+    logger.info(f"  参考文献条目：{stats[ParagraphType.REFERENCE_ENTRY]} 条")
     logger.info(f"  摘要段落：{stats[ParagraphType.ABSTRACT]} 个")
     logger.info(f"  关键词段：{stats[ParagraphType.KEYWORDS]} 个")
     logger.info(f"  正文段落：{stats[ParagraphType.BODY]} 个")
+    logger.info(f"  表格内段落：{table_paragraph_count} 个")
     logger.info("=" * 50)
 
-    return True
+    return {
+        "stats": stats,
+        "title_text": title_text,
+        "page_setup": page_setup,
+        "table_paragraphs": table_paragraph_count,
+        "outline": outline,
+    }
 
 
 # ============================================================

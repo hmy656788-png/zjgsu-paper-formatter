@@ -5,3 +5,6 @@ uploads/
 outputs/
 .DS_Store
 *.egg-info/
+.vercel
+.vscode/
+AGENTS.md

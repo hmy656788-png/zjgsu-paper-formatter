@@ -531,7 +531,14 @@ def iter_all_tables(tables):
 
 def _has_drawing(paragraph) -> bool:
     """判断段落中是否包含图片等 drawing 元素。"""
-    return bool(paragraph._element.findall(".//" + qn("w:drawing")))
+    element = paragraph._element
+    tags = (
+        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing",
+        "{urn:schemas-microsoft-com:vml}shape",
+        "{urn:schemas-microsoft-com:office:office}OLEObject",
+        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pict",
+    )
+    return any(element.findall(".//" + tag) for tag in tags)
 
 
 def _has_equation_content(paragraph) -> bool:
@@ -893,46 +900,19 @@ def _set_cell_only_bottom_border(cell, color: str = "000000", size: str = "8"):
     )
 
 
-def _clear_cell_borders(cell):
-    """清除单元格自身包含的显式边框定义，让其强制继承表格级别的设定。"""
+def _set_explicit_cell_borders(cell, top: bool = False, bottom: bool = False, color: str = "000000", size: str = "10"):
+    """
+    通过直接覆写单元格级别的四面边框，强行阻断并覆盖所有来自表格级别的样式继承。
+    对于不需要显示的边，设置为 val="none"。
+    这能保证 100% 出现需要的三线表线条，并消除表格自带格线。
+    """
     tc_pr = cell._tc.get_or_add_tcPr()
     tc_borders = tc_pr.find(qn("w:tcBorders"))
     if tc_borders is not None:
         tc_pr.remove(tc_borders)
-
-def _set_cell_horizontal_borders(cell, *, top: bool = False, bottom: bool = False, color: str = "000000", size: str = "10"):
-    """重新设置单元格所需的边框层级，未明确声明的边框将完美继承表格级设定。"""
-    _clear_cell_borders(cell)
-    
-    if not top and not bottom:
-        return
-
-    tc_pr = cell._tc.get_or_add_tcPr()
+        
     tc_borders = OxmlElement("w:tcBorders")
     tc_pr.append(tc_borders)
-
-    visible = {
-        "val": "single",
-        "sz": size,
-        "space": "0",
-        "color": color,
-    }
-    attrs = {}
-    if top:
-        attrs["top"] = visible
-    if bottom:
-        attrs["bottom"] = visible
-        
-    _set_xml_borders(tc_borders, attrs)
-
-
-def _set_table_three_line_borders(table, color: str = "000000", size: str = "10"):
-    """在表格级别设置顶线和底线，避免被单元格边框覆盖。"""
-    tbl_pr = table._tbl.tblPr
-    tbl_borders = tbl_pr.find(qn("w:tblBorders"))
-    if tbl_borders is None:
-        tbl_borders = OxmlElement("w:tblBorders")
-        tbl_pr.append(tbl_borders)
 
     hidden = _hidden_border_attrs()
     visible = {
@@ -941,18 +921,23 @@ def _set_table_three_line_borders(table, color: str = "000000", size: str = "10"
         "space": "0",
         "color": color,
     }
+    
     _set_xml_borders(
-        tbl_borders,
+        tc_borders,
         {
-            "top": visible,
+            "top": visible if top else hidden,
+            "bottom": visible if bottom else hidden,
             "left": hidden,
-            "bottom": visible,
             "right": hidden,
-            "insideH": hidden,
-            "insideV": hidden,
         },
     )
 
+def _remove_table_borders(table):
+    """移除表格级的边框定义，以防与单元格边框交织冲突"""
+    tbl_pr = table._tbl.tblPr
+    tbl_borders = tbl_pr.find(qn("w:tblBorders"))
+    if tbl_borders is not None:
+        tbl_pr.remove(tbl_borders)
 
 def format_three_line_table(table):
     """将普通表格处理为学术论文常见的三线表边框。"""
@@ -960,16 +945,29 @@ def format_three_line_table(table):
     if not rows:
         return
 
-    _set_table_three_line_borders(table)
+    _remove_table_borders(table)
+    # 取消底层的表格样式以防底层隐藏线逻辑有奇怪的行为
+    if table.style:
+        try:
+            table.style = "Normal Table"
+        except Exception:
+            pass
+
+    last_row_index = len(rows) - 1
 
     for row_index, row in enumerate(rows):
-        is_header_row = row_index == 0
+        is_header = (row_index == 0)
+        is_last = (row_index == last_row_index)
+        
         for cell in row.cells:
-            _set_cell_horizontal_borders(
+            # 第一行：画顶线和底线（粗一点或者普通的单线条）
+            # 最后一行：画底线
+            # 其他行：全部 none
+            _set_explicit_cell_borders(
                 cell,
-                top=False,
-                bottom=is_header_row,
-                size="10",
+                top=is_header,
+                bottom=is_header or is_last,
+                size="10" if is_header or is_last else "0",
             )
 
 
@@ -1081,6 +1079,34 @@ def _append_page_number_field(paragraph):
     run_end._r.append(fld_char_end)
 
 
+def _paragraph_contains_page_break(paragraph) -> bool:
+    """判断段落里是否已经包含显式分页符。"""
+    return 'w:type="page"' in paragraph._element.xml
+
+
+def _append_forced_page_break(doc):
+    """在文档末尾追加一个显式分页符。"""
+    page_break = doc.add_paragraph()
+    _clear_paragraph_style(page_break)
+    _set_paragraph_format(
+        page_break,
+        alignment=WD_ALIGN_PARAGRAPH.LEFT,
+        first_line_indent=Pt(0),
+        line_spacing=1.0,
+        line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+    )
+    page_break.add_run().add_break(WD_BREAK.PAGE)
+    return page_break
+
+
+def ensure_document_ends_with_page_break(doc):
+    """确保当前文档末尾带有分页符，便于正文从下一页开始。"""
+    if doc.paragraphs and _paragraph_contains_page_break(doc.paragraphs[-1]):
+        return
+
+    _append_forced_page_break(doc)
+
+
 def get_max_printable_width(doc) -> int:
     """返回文档各节中可打印区域的最小宽度（EMU）。"""
     widths = []
@@ -1127,8 +1153,46 @@ def constrain_inline_images(doc, progress_callback=None) -> int:
             progress_callback,
             3,
             f"已缩小第 {index}/{total_images} 张图片",
-            "图片宽度已限制到页面可打印区域内",
+            "嵌入型图片宽度已限制到页面可打印区域内",
         )
+
+    # 兼容各种由于直接粘贴导致的非标准图片（如浮动图形 wp:anchor 或旧版 v:shape）
+    for anchor in doc._element.findall(".//" + qn("wp:anchor")):
+        extent = anchor.find(".//" + qn("wp:extent"))
+        if extent is not None:
+            cx = int(extent.get("cx", 0))
+            cy = int(extent.get("cy", 0))
+            if cx > max_width:
+                scale = max_width / cx
+                new_cx = max_width
+                new_cy = max(1, int(round(cy * scale)))
+                extent.set("cx", str(new_cx))
+                extent.set("cy", str(new_cy))
+                for a_ext in anchor.findall(".//" + qn("a:ext")):
+                    a_ext.set("cx", str(new_cx))
+                    a_ext.set("cy", str(new_cy))
+                resized_count += 1
+
+    # 兼容直接从部分网页/Excel 粘贴带来的 VML 图形 (v:shape)
+    for v_shape in doc._element.findall(".//{urn:schemas-microsoft-com:vml}shape"):
+        style_str = v_shape.get("style", "")
+        if "width:" in style_str and "height:" in style_str:
+            import re
+            w_match = re.search(r"width:([0-9.]+)([a-zA-Z]+)", style_str)
+            h_match = re.search(r"height:([0-9.]+)([a-zA-Z]+)", style_str)
+            if w_match and h_match:
+                w_val = float(w_match.group(1))
+                w_unit = w_match.group(2)
+                h_val = float(h_match.group(1))
+                h_unit = h_match.group(2)
+                unit_to_emu = {"pt": 12700, "in": 914400, "cm": 360000, "mm": 36000, "px": 9525}
+                w_emu = int(w_val * unit_to_emu.get(w_unit, 12700))
+                if w_emu > max_width:
+                    scale = max_width / w_emu
+                    new_style = re.sub(r"width:[0-9.]+[a-zA-Z]+", f"width:{w_val * scale:.2f}{w_unit}", style_str)
+                    new_style = re.sub(r"height:[0-9.]+[a-zA-Z]+", f"height:{h_val * scale:.2f}{h_unit}", new_style)
+                    v_shape.set("style", new_style)
+                    resized_count += 1
 
     return resized_count
 
@@ -2296,6 +2360,7 @@ def merge_cover_and_body(cover_path: str, body_path: str, output_path: str, prog
         emit_progress(progress_callback, 4, "正在合并封面与排版后的正文")
         cover_doc = Document(cover_path)
         cover_section_count = len(cover_doc.sections)
+        ensure_document_ends_with_page_break(cover_doc)
 
         composer = Composer(cover_doc)
         formatted_body_doc = Document(formatted_body_path)

@@ -893,30 +893,37 @@ def _set_cell_only_bottom_border(cell, color: str = "000000", size: str = "8"):
     )
 
 
-def _set_cell_horizontal_borders(cell, *, top: bool = False, bottom: bool = False, color: str = "000000", size: str = "8"):
-    """仅保留单元格的上/下边框，用于三线表。"""
+def _clear_cell_borders(cell):
+    """清除单元格自身包含的显式边框定义，让其强制继承表格级别的设定。"""
     tc_pr = cell._tc.get_or_add_tcPr()
     tc_borders = tc_pr.find(qn("w:tcBorders"))
-    if tc_borders is None:
-        tc_borders = OxmlElement("w:tcBorders")
-        tc_pr.append(tc_borders)
+    if tc_borders is not None:
+        tc_pr.remove(tc_borders)
 
-    hidden = _hidden_border_attrs()
+def _set_cell_horizontal_borders(cell, *, top: bool = False, bottom: bool = False, color: str = "000000", size: str = "10"):
+    """重新设置单元格所需的边框层级，未明确声明的边框将完美继承表格级设定。"""
+    _clear_cell_borders(cell)
+    
+    if not top and not bottom:
+        return
+
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tc_borders = OxmlElement("w:tcBorders")
+    tc_pr.append(tc_borders)
+
     visible = {
         "val": "single",
         "sz": size,
         "space": "0",
         "color": color,
     }
-    _set_xml_borders(
-        tc_borders,
-        {
-            "top": visible if top else hidden,
-            "left": hidden,
-            "right": hidden,
-            "bottom": visible if bottom else hidden,
-        },
-    )
+    attrs = {}
+    if top:
+        attrs["top"] = visible
+    if bottom:
+        attrs["bottom"] = visible
+        
+    _set_xml_borders(tc_borders, attrs)
 
 
 def _set_table_three_line_borders(table, color: str = "000000", size: str = "10"):

@@ -35,7 +35,6 @@
       <!-- ====== 输入模式切换 ====== -->
       <div class="input-tabs">
         <button class="tab-btn active" id="tabUpload">上传文件</button>
-        <button class="tab-btn" id="tabMerge">封面+正文</button>
         <button class="tab-btn" id="tabPaste">黏贴文字</button>
       </div>
 
@@ -52,49 +51,6 @@
         </button>
       </section>
 
-      <!-- ====== 封面+正文合并区域 ====== -->
-      <section class="merge-section hidden" id="mergeSection">
-        <div class="merge-uploads">
-          <div class="merge-card">
-            <div class="merge-card-label">📄 封面文档</div>
-            <div class="merge-zone" id="mergeCoverZone">
-              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-              <p class="merge-zone-hint">点击或拖拽上传</p>
-              <p class="merge-zone-format">.docx</p>
-              <input type="file" id="mergeCoverInput" accept=".docx" hidden />
-            </div>
-            <div class="merge-file hidden" id="mergeCoverFile">
-              <div class="merge-file-info">
-                <p class="merge-file-name" id="mergeCoverName"></p>
-                <p class="merge-file-size" id="mergeCoverSize"></p>
-              </div>
-              <button class="merge-file-remove" id="mergeCoverRemove" title="移除"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-            </div>
-          </div>
-          <div class="merge-connector"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></div>
-          <div class="merge-card">
-            <div class="merge-card-label">📝 正文文档</div>
-            <div class="merge-zone" id="mergeBodyZone">
-              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-              <p class="merge-zone-hint">点击或拖拽上传</p>
-              <p class="merge-zone-format">.docx</p>
-              <input type="file" id="mergeBodyInput" accept=".docx" hidden />
-            </div>
-            <div class="merge-file hidden" id="mergeBodyFile">
-              <div class="merge-file-info">
-                <p class="merge-file-name" id="mergeBodyName"></p>
-                <p class="merge-file-size" id="mergeBodySize"></p>
-              </div>
-              <button class="merge-file-remove" id="mergeBodyRemove" title="移除"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-            </div>
-          </div>
-        </div>
-        <p class="merge-desc">封面保持原样 · 正文自动排版 · 合并为一个完整文档</p>
-        <button class="btn-format" id="btnMerge" disabled>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
-          合并排版
-        </button>
-      </section>
 
       <!-- ====== 上传区域 ====== -->
       <section class="upload-section" id="uploadSection">
@@ -140,13 +96,32 @@
           </button>
         </div>
 
+        <!-- 封面文档（可选） -->
+        <div class="cover-option" id="coverOption">
+          <div class="cover-zone" id="coverZone">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <span>添加封面文档（可选）</span>
+            <input type="file" id="coverInput" accept=".docx" hidden />
+          </div>
+          <div class="cover-file hidden" id="coverFileCard">
+            <div class="cover-file-info">
+              <span class="cover-file-tag">封面</span>
+              <p class="cover-file-name" id="coverFileName"></p>
+              <p class="cover-file-size" id="coverFileSize"></p>
+            </div>
+            <button class="cover-file-remove" id="coverFileRemove" title="移除封面">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+        </div>
+
         <button class="btn-format" id="btnFormat">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="4 7 4 4 20 4 20 7"/>
             <line x1="9" y1="20" x2="15" y2="20"/>
             <line x1="12" y1="4" x2="12" y2="20"/>
           </svg>
-          开始排版
+          <span id="btnFormatLabel">开始排版</span>
         </button>
       </section>
 

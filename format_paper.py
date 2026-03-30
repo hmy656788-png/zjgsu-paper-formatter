@@ -1221,6 +1221,23 @@ def _set_row_repeat_as_header(row, enabled: bool = True):
     tbl_header.set(qn("w:val"), "true")
 
 
+def _set_row_cant_split(row, enabled: bool = True):
+    """禁止表格行在分页处被拆开，提升长表阅读连续性。"""
+    tr_pr = row._tr.get_or_add_trPr()
+    cant_split = tr_pr.find(qn("w:cantSplit"))
+
+    if not enabled:
+        if cant_split is not None:
+            tr_pr.remove(cant_split)
+        return
+
+    if cant_split is None:
+        cant_split = OxmlElement("w:cantSplit")
+        tr_pr.append(cant_split)
+
+    cant_split.set(qn("w:val"), "true")
+
+
 def format_three_line_table(table):
     """将普通表格处理为学术论文常见的三线表边框。"""
     rows = list(table.rows)
@@ -1241,6 +1258,7 @@ def format_three_line_table(table):
         is_header = (row_index == 0)
         is_last = (row_index == last_row_index)
         _set_row_repeat_as_header(row, enabled=is_header)
+        _set_row_cant_split(row, enabled=True)
         
         for cell in row.cells:
             # 第一行：画顶线和底线（粗一点或者普通的单线条）

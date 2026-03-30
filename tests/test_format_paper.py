@@ -677,6 +677,7 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             tbl_borders = output_doc.tables[0]._tbl.tblPr.find(qn("w:tblBorders"))
             top_left_borders = output_doc.tables[0].cell(0, 0)._tc.tcPr.find(qn("w:tcBorders"))
             bottom_left_borders = output_doc.tables[0].cell(1, 0)._tc.tcPr.find(qn("w:tcBorders"))
+            first_row_tr_pr = output_doc.tables[0].rows[0]._tr.trPr
             self.assertIsNone(tbl_borders)
             self.assertEqual(top_left_borders.find(qn("w:top")).get(qn("w:val")), "single")
             self.assertEqual(top_left_borders.find(qn("w:bottom")).get(qn("w:val")), "single")
@@ -684,6 +685,7 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertEqual(top_left_borders.find(qn("w:right")).get(qn("w:val")), "none")
             self.assertEqual(bottom_left_borders.find(qn("w:top")).get(qn("w:val")), "none")
             self.assertEqual(bottom_left_borders.find(qn("w:bottom")).get(qn("w:val")), "single")
+            self.assertEqual(first_row_tr_pr.find(qn("w:tblHeader")).get(qn("w:val")), "true")
 
     def test_format_academic_paper_scales_oversized_images_to_page_width(self):
         tiny_png = base64.b64decode(

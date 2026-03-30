@@ -1203,6 +1203,24 @@ def _remove_table_borders(table):
     if tbl_borders is not None:
         tbl_pr.remove(tbl_borders)
 
+
+def _set_row_repeat_as_header(row, enabled: bool = True):
+    """将表格首行标记为跨页重复表头。"""
+    tr_pr = row._tr.get_or_add_trPr()
+    tbl_header = tr_pr.find(qn("w:tblHeader"))
+
+    if not enabled:
+        if tbl_header is not None:
+            tr_pr.remove(tbl_header)
+        return
+
+    if tbl_header is None:
+        tbl_header = OxmlElement("w:tblHeader")
+        tr_pr.append(tbl_header)
+
+    tbl_header.set(qn("w:val"), "true")
+
+
 def format_three_line_table(table):
     """将普通表格处理为学术论文常见的三线表边框。"""
     rows = list(table.rows)
@@ -1222,6 +1240,7 @@ def format_three_line_table(table):
     for row_index, row in enumerate(rows):
         is_header = (row_index == 0)
         is_last = (row_index == last_row_index)
+        _set_row_repeat_as_header(row, enabled=is_header)
         
         for cell in row.cells:
             # 第一行：画顶线和底线（粗一点或者普通的单线条）

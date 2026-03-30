@@ -905,6 +905,7 @@ def _set_paragraph_pagination_flags(
     *,
     keep_next: bool | None = None,
     keep_lines: bool | None = None,
+    widow_control: bool | None = None,
 ):
     """统一设置段落分页相关控制项。"""
     if keep_next is not None:
@@ -912,6 +913,9 @@ def _set_paragraph_pagination_flags(
 
     if keep_lines is not None:
         _set_paragraph_on_off_flag(paragraph, "keepLines", keep_lines)
+
+    if widow_control is not None:
+        _set_paragraph_on_off_flag(paragraph, "widowControl", widow_control)
 
 
 def _clear_paragraph_style(paragraph, preserve_list_style: bool = False):
@@ -1948,7 +1952,12 @@ def format_body(paragraph, in_table: bool = False):
             line_spacing=1.5,
             line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
         )
-        _set_paragraph_pagination_flags(paragraph, keep_next=False, keep_lines=True)
+        _set_paragraph_pagination_flags(
+            paragraph,
+            keep_next=False,
+            keep_lines=True,
+            widow_control=True,
+        )
         _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
         return
 
@@ -1958,7 +1967,12 @@ def format_body(paragraph, in_table: bool = False):
             alignment=paragraph.paragraph_format.alignment or WD_ALIGN_PARAGRAPH.CENTER,
             first_line_indent=Pt(0),
         )
-        _set_paragraph_pagination_flags(paragraph, keep_next=not in_table, keep_lines=True)
+        _set_paragraph_pagination_flags(
+            paragraph,
+            keep_next=not in_table,
+            keep_lines=True,
+            widow_control=True,
+        )
         _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
         return
 
@@ -1977,6 +1991,7 @@ def format_body(paragraph, in_table: bool = False):
             line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
         )
 
+    _set_paragraph_pagination_flags(paragraph, widow_control=True)
     _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
 
 
@@ -2161,6 +2176,7 @@ def _format_labeled_paragraph(
         line_spacing=1.5,
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
+    _set_paragraph_pagination_flags(paragraph, widow_control=True)
 
     full_text = paragraph.text
     match = label_pattern.match(full_text)
@@ -2223,6 +2239,7 @@ def format_english_abstract_heading(paragraph):
         line_spacing_rule=WD_LINE_SPACING.SINGLE,
     )
     _set_paragraph_outline_level(paragraph, None)
+    _set_paragraph_pagination_flags(paragraph, widow_control=True)
     _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12, bold=True)
 
 
@@ -2250,6 +2267,7 @@ def format_english_abstract(paragraph, label_pattern: re.Pattern | None = None):
         line_spacing=1.5,
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
+    _set_paragraph_pagination_flags(paragraph, widow_control=True)
     _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
 
 
@@ -2286,6 +2304,7 @@ def format_reference_entry(paragraph):
         line_spacing_rule=WD_LINE_SPACING.SINGLE,
     )
     _set_paragraph_outline_level(paragraph, None)
+    _set_paragraph_pagination_flags(paragraph, widow_control=True)
     paragraph.paragraph_format.left_indent = Pt(0)
     paragraph.paragraph_format.right_indent = Pt(0)
 

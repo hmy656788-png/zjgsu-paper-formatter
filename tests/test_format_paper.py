@@ -423,10 +423,12 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertEqual(abstract_body.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
             self.assertEqual(abstract_body.paragraph_format.first_line_indent.pt, 0.0)
             self.assertEqual(abstract_body.runs[0].font.size.pt, 12.0)
+            self.assertEqual(abstract_body._element.pPr.find(qn("w:widowControl")).get(qn("w:val")), "true")
 
             self.assertEqual(keywords.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
             self.assertTrue(keywords.runs[0].font.bold)
             self.assertEqual(keywords.text, "Keywords: supply chain resilience; cross-border e-commerce")
+            self.assertEqual(keywords._element.pPr.find(qn("w:widowControl")).get(qn("w:val")), "true")
             self.assert_paragraph_has_numbering(introduction, 0)
         finally:
             output_path.unlink(missing_ok=True)
@@ -668,6 +670,8 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertEqual(output_doc.paragraphs[7]._element.pPr.find(qn("w:keepLines")).get(qn("w:val")), "true")
             self.assertIsNone(output_doc.paragraphs[7]._element.pPr.find(qn("w:keepNext")))
             self.assertEqual(output_doc.paragraphs[10]._element.pPr.find(qn("w:keepNext")).get(qn("w:val")), "true")
+            self.assertEqual(output_doc.paragraphs[4]._element.pPr.find(qn("w:widowControl")).get(qn("w:val")), "true")
+            self.assertEqual(output_doc.paragraphs[12]._element.pPr.find(qn("w:widowControl")).get(qn("w:val")), "true")
 
             body_run = output_doc.paragraphs[4].runs[0]
             table_run = output_doc.tables[0].cell(1, 1).paragraphs[0].runs[0]

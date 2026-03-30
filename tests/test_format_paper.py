@@ -465,6 +465,67 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
         finally:
             output_path.unlink(missing_ok=True)
 
+    def test_format_academic_paper_infers_numbering_from_heading_styles(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "style_heading_input.docx"
+            output_path = temp_path / "style_heading_output.docx"
+
+            doc = Document()
+            doc.add_paragraph("平台治理视角下数字化协同研究")
+            doc.add_paragraph("摘要：这是摘要内容")
+            doc.add_paragraph("关键词：平台治理 协同")
+            doc.add_paragraph("引言", style="Heading 1")
+            doc.add_paragraph("研究背景", style="Heading 2")
+            doc.add_paragraph("研究假设", style="Heading 3")
+            doc.add_paragraph("正文内容")
+            doc.save(str(input_path))
+
+            summary = format_academic_paper(str(input_path), str(output_path))
+
+            self.assertEqual(summary["stats"]["heading_l1"], 1)
+            self.assertEqual(summary["stats"]["heading_l2"], 1)
+            self.assertEqual(summary["stats"]["heading_l3"], 1)
+
+            output_doc = Document(str(output_path))
+            heading_l1 = next(paragraph for paragraph in output_doc.paragraphs if paragraph.text == "引言")
+            heading_l2 = next(paragraph for paragraph in output_doc.paragraphs if paragraph.text == "研究背景")
+            heading_l3 = next(paragraph for paragraph in output_doc.paragraphs if paragraph.text == "研究假设")
+
+            heading_l1_num_id = self.assert_paragraph_has_numbering(heading_l1, 0)
+            heading_l2_num_id = self.assert_paragraph_has_numbering(heading_l2, 1)
+            heading_l3_num_id = self.assert_paragraph_has_numbering(heading_l3, 2)
+
+            self.assert_numbering_overrides(output_doc, heading_l1_num_id, {0: 1})
+            self.assert_numbering_overrides(output_doc, heading_l2_num_id, {0: 1, 1: 1})
+            self.assert_numbering_overrides(output_doc, heading_l3_num_id, {0: 1, 1: 1, 2: 1})
+
+    def test_format_academic_paper_does_not_auto_number_plain_short_body(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "plain_short_body_input.docx"
+            output_path = temp_path / "plain_short_body_output.docx"
+
+            doc = Document()
+            doc.add_paragraph("短标题误判保护测试")
+            doc.add_paragraph("摘要：这是摘要内容")
+            doc.add_paragraph("关键词：误判 测试")
+            doc.add_paragraph("研究意义")
+            doc.add_paragraph("这里是正文展开内容。")
+            doc.save(str(input_path))
+
+            summary = format_academic_paper(str(input_path), str(output_path))
+
+            self.assertEqual(summary["stats"]["heading_l1"], 0)
+            self.assertEqual(summary["stats"]["heading_l2"], 0)
+            self.assertEqual(summary["stats"]["heading_l3"], 0)
+
+            output_doc = Document(str(output_path))
+            paragraph = next(item for item in output_doc.paragraphs if item.text == "研究意义")
+            num_pr = paragraph._element.pPr.find(qn("w:numPr")) if paragraph._element.pPr is not None else None
+            self.assertIsNone(num_pr)
+            self.assertEqual(paragraph.paragraph_format.first_line_indent.pt, 24.0)
+
     def test_format_academic_paper_preserves_equation_paragraphs(self):
         omml = parse_xml(
             r"""

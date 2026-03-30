@@ -209,6 +209,15 @@ HEADING_NUMBER_PATTERNS = {
 HEADING_NUMBERING_NSID = "5A475355"
 HEADING_NUMBERING_TEMPLATE = "5A475355"
 HEADING_NUMBERING_LEVEL_TEXTS = ("%1", "%1.%2", "%1.%2.%3")
+UNNUMBERED_HEADING_MAX_LENGTH = 40
+HEADING_STYLE_NAME_TO_LEVEL = {
+    "heading1": 0,
+    "heading2": 1,
+    "heading3": 2,
+    "标题1": 0,
+    "标题2": 1,
+    "标题3": 2,
+}
 
 
 # ============================================================
@@ -431,6 +440,109 @@ def extract_heading_numbering(text: str, para_type: str) -> tuple[str, tuple[int
         return normalized, ()
 
     return title_text, tuple(int(part) for part in number_text.split("."))
+
+
+def _read_outline_level(p_pr) -> int | None:
+    """从段落或样式的 pPr 中读取 outline level。"""
+    if p_pr is None:
+        return None
+
+    outline_level = p_pr.find(qn("w:outlineLvl"))
+    if outline_level is None:
+        return None
+
+    raw_value = outline_level.get(qn("w:val"))
+    if raw_value is None:
+        return None
+
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_paragraph_outline_level_hint(paragraph) -> int | None:
+    """
+    获取段落自带的标题层级提示。
+
+    优先读取段落直接设置的 outline level；如果没有，再回退到样式中配置的
+    outline level 或常见的 Heading 样式名称。
+    """
+    direct_level = _read_outline_level(paragraph._element.pPr)
+    if direct_level in {0, 1, 2}:
+        return direct_level
+
+    style = paragraph.style
+    if style is None:
+        return None
+
+    style_level = _read_outline_level(style.element.find(qn("w:pPr")))
+    if style_level in {0, 1, 2}:
+        return style_level
+
+    style_name = re.sub(r"\s+", "", str(getattr(style, "name", "") or ""))
+    return HEADING_STYLE_NAME_TO_LEVEL.get(style_name.lower(), HEADING_STYLE_NAME_TO_LEVEL.get(style_name))
+
+
+def looks_like_unnumbered_heading(text: str) -> bool:
+    """保守判断一段文字是否像“缺失编号的标题”。"""
+    normalized = normalize_text_for_matching(text)
+    if not normalized or len(normalized) > UNNUMBERED_HEADING_MAX_LENGTH:
+        return False
+
+    if normalized.endswith(("。", "！", "？", "!", "?", "；", ";", "，", ",", "：", ":")):
+        return False
+
+    if RE_REFERENCE_ENTRY_TEXT.match(normalized):
+        return False
+
+    if match_caption(normalized):
+        return False
+
+    return True
+
+
+def infer_heading_type_from_paragraph(paragraph, text: str) -> str | None:
+    """根据段落原始样式/outline level，推断未编号标题的层级。"""
+    if not looks_like_unnumbered_heading(text):
+        return None
+
+    level = _get_paragraph_outline_level_hint(paragraph)
+    return {
+        0: ParagraphType.HEADING_L1,
+        1: ParagraphType.HEADING_L2,
+        2: ParagraphType.HEADING_L3,
+    }.get(level)
+
+
+def resolve_heading_numbering_parts(
+    para_type: str,
+    explicit_parts: tuple[int, ...],
+    numbering_state: list[int],
+    *,
+    allow_auto_numbering: bool = False,
+) -> tuple[int, ...]:
+    """综合显式编号和推断层级，返回当前标题应使用的原生编号。"""
+    level = HEADING_LEVEL_BY_TYPE.get(para_type)
+    if level is None:
+        return ()
+
+    if explicit_parts:
+        for index in range(len(numbering_state)):
+            numbering_state[index] = explicit_parts[index] if index < len(explicit_parts) else 0
+        return explicit_parts
+
+    if not allow_auto_numbering:
+        return ()
+
+    if level > 0 and any(numbering_state[index] <= 0 for index in range(level)):
+        return ()
+
+    numbering_state[level] = numbering_state[level] + 1 if numbering_state[level] > 0 else 1
+    for index in range(level + 1, len(numbering_state)):
+        numbering_state[index] = 0
+
+    return tuple(numbering_state[: level + 1])
 
 
 # ============================================================
@@ -2248,6 +2360,7 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
     figure_counter = 0
     table_counter = 0
     equation_paragraph_count = 0
+    heading_number_state = [0, 0, 0]
     total_paragraphs = len(doc.paragraphs)
 
     # ---------- 4. 遍历并格式化每个段落 ----------
@@ -2256,6 +2369,12 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
         raw_text = paragraph.text
         text = normalize_text_for_matching(raw_text)
         para_type = ParagraphType.TITLE if i == title_index else classify_paragraph(raw_text)
+        inferred_heading = False
+        if para_type == ParagraphType.BODY:
+            inferred_para_type = infer_heading_type_from_paragraph(paragraph, raw_text)
+            if inferred_para_type is not None:
+                para_type = inferred_para_type
+                inferred_heading = True
         if _has_equation_content(paragraph):
             equation_paragraph_count += 1
 
@@ -2314,20 +2433,41 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
             format_title(paragraph, text_override=text)
 
         elif para_type == ParagraphType.HEADING_L1:
-            logger.info(f"  [一级标题] 第{i+1}段: \"{text}\"")
-            heading_text, numbering_parts = extract_heading_numbering(text, para_type)
+            heading_text, explicit_parts = extract_heading_numbering(text, para_type)
+            numbering_parts = resolve_heading_numbering_parts(
+                para_type,
+                explicit_parts,
+                heading_number_state,
+                allow_auto_numbering=inferred_heading,
+            )
+            heading_label = "推断一级标题" if inferred_heading else "一级标题"
+            logger.info(f"  [{heading_label}] 第{i+1}段: \"{text}\"")
             format_heading_l1(paragraph, text_override=heading_text)
             apply_native_heading_numbering(doc, paragraph, para_type, numbering_parts)
 
         elif para_type == ParagraphType.HEADING_L2:
-            logger.info(f"  [二级标题] 第{i+1}段: \"{text}\"")
-            heading_text, numbering_parts = extract_heading_numbering(text, para_type)
+            heading_text, explicit_parts = extract_heading_numbering(text, para_type)
+            numbering_parts = resolve_heading_numbering_parts(
+                para_type,
+                explicit_parts,
+                heading_number_state,
+                allow_auto_numbering=inferred_heading,
+            )
+            heading_label = "推断二级标题" if inferred_heading else "二级标题"
+            logger.info(f"  [{heading_label}] 第{i+1}段: \"{text}\"")
             format_heading_l2(paragraph, text_override=heading_text)
             apply_native_heading_numbering(doc, paragraph, para_type, numbering_parts)
 
         elif para_type == ParagraphType.HEADING_L3:
-            logger.info(f"  [三级标题] 第{i+1}段: \"{text}\"")
-            heading_text, numbering_parts = extract_heading_numbering(text, para_type)
+            heading_text, explicit_parts = extract_heading_numbering(text, para_type)
+            numbering_parts = resolve_heading_numbering_parts(
+                para_type,
+                explicit_parts,
+                heading_number_state,
+                allow_auto_numbering=inferred_heading,
+            )
+            heading_label = "推断三级标题" if inferred_heading else "三级标题"
+            logger.info(f"  [{heading_label}] 第{i+1}段: \"{text}\"")
             format_heading_l3(paragraph, text_override=heading_text)
             apply_native_heading_numbering(doc, paragraph, para_type, numbering_parts)
 

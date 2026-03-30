@@ -883,6 +883,37 @@ def _set_paragraph_outline_level(paragraph, level: int | None):
     outline_level.set(qn("w:val"), str(level))
 
 
+def _set_paragraph_on_off_flag(paragraph, flag: str, enabled: bool):
+    """设置段落级 on/off 标志，如 keepNext、keepLines。"""
+    p_pr = paragraph._element.get_or_add_pPr()
+    flag_element = p_pr.find(qn(f"w:{flag}"))
+
+    if not enabled:
+        if flag_element is not None:
+            p_pr.remove(flag_element)
+        return
+
+    if flag_element is None:
+        flag_element = OxmlElement(f"w:{flag}")
+        p_pr.append(flag_element)
+
+    flag_element.set(qn("w:val"), "true")
+
+
+def _set_paragraph_pagination_flags(
+    paragraph,
+    *,
+    keep_next: bool | None = None,
+    keep_lines: bool | None = None,
+):
+    """统一设置段落分页相关控制项。"""
+    if keep_next is not None:
+        _set_paragraph_on_off_flag(paragraph, "keepNext", keep_next)
+
+    if keep_lines is not None:
+        _set_paragraph_on_off_flag(paragraph, "keepLines", keep_lines)
+
+
 def _clear_paragraph_style(paragraph, preserve_list_style: bool = False):
     """
     清除段落的已有样式设置，防止模板样式干扰排版。
@@ -1917,6 +1948,7 @@ def format_body(paragraph, in_table: bool = False):
             line_spacing=1.5,
             line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
         )
+        _set_paragraph_pagination_flags(paragraph, keep_next=False, keep_lines=True)
         _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
         return
 
@@ -1926,6 +1958,7 @@ def format_body(paragraph, in_table: bool = False):
             alignment=paragraph.paragraph_format.alignment or WD_ALIGN_PARAGRAPH.CENTER,
             first_line_indent=Pt(0),
         )
+        _set_paragraph_pagination_flags(paragraph, keep_next=not in_table, keep_lines=True)
         _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
         return
 
@@ -1968,6 +2001,7 @@ def format_title(paragraph, text_override: str | None = None):
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
     _set_paragraph_outline_level(paragraph, None)
+    _set_paragraph_pagination_flags(paragraph, keep_next=True, keep_lines=True)
 
     _apply_run_fonts(paragraph, cn_font="黑体", en_font="Times New Roman", size_pt=18, bold=True)
 
@@ -1994,6 +2028,7 @@ def format_heading_l1(paragraph, text_override: str | None = None, outline_level
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
     _set_paragraph_outline_level(paragraph, outline_level)
+    _set_paragraph_pagination_flags(paragraph, keep_next=True, keep_lines=True)
 
     _apply_run_fonts(paragraph, cn_font="黑体", en_font="Times New Roman", size_pt=16, bold=True)
 
@@ -2020,6 +2055,7 @@ def format_heading_l2(paragraph, text_override: str | None = None):
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
     _set_paragraph_outline_level(paragraph, 1)
+    _set_paragraph_pagination_flags(paragraph, keep_next=True, keep_lines=True)
 
     _apply_run_fonts(paragraph, cn_font="黑体", en_font="Times New Roman", size_pt=14, bold=True)
 
@@ -2046,11 +2082,12 @@ def format_heading_l3(paragraph, text_override: str | None = None):
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
     _set_paragraph_outline_level(paragraph, 2)
+    _set_paragraph_pagination_flags(paragraph, keep_next=True, keep_lines=True)
 
     _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12, bold=True)
 
 
-def format_figure_table(paragraph, text_override: str | None = None):
+def format_figure_table(paragraph, text_override: str | None = None, *, keep_next: bool = False):
     """
     图表标题格式：
       - 字体：黑体
@@ -2069,6 +2106,7 @@ def format_figure_table(paragraph, text_override: str | None = None):
         line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
     )
     _set_paragraph_outline_level(paragraph, None)
+    _set_paragraph_pagination_flags(paragraph, keep_next=keep_next, keep_lines=True)
 
     _apply_run_fonts(paragraph, cn_font="黑体", en_font="Times New Roman", size_pt=10.5)
 
@@ -2097,6 +2135,7 @@ def format_references_heading(paragraph, text_override: str | None = None):
         line_spacing_rule=WD_LINE_SPACING.SINGLE,
     )
     _set_paragraph_outline_level(paragraph, None)
+    _set_paragraph_pagination_flags(paragraph, keep_next=True, keep_lines=True)
 
     _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12, bold=True)
 
@@ -2514,7 +2553,7 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
             caption_text = rebuild_caption_text(ParagraphType.FIGURE_CAPTION, figure_counter, caption_match[1])
             logger.info(f"  [图标题] 第{i+1}段: \"{caption_text}\"")
             emit_progress(progress_callback, 2, f"识别到第 {figure_counter} 张图片标题")
-            format_figure_table(paragraph, text_override=caption_text)
+            format_figure_table(paragraph, text_override=caption_text, keep_next=False)
 
         elif para_type == ParagraphType.TABLE_CAPTION:
             table_counter += 1
@@ -2522,7 +2561,7 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
             caption_text = rebuild_caption_text(ParagraphType.TABLE_CAPTION, table_counter, caption_match[1])
             logger.info(f"  [表标题] 第{i+1}段: \"{caption_text}\"")
             emit_progress(progress_callback, 2, f"识别到第 {table_counter} 张表格标题")
-            format_figure_table(paragraph, text_override=caption_text)
+            format_figure_table(paragraph, text_override=caption_text, keep_next=True)
 
         elif para_type == ParagraphType.SECTION_HEADING:
             logger.info(f"  [非编号章节标题] 第{i+1}段: \"{text}\"")

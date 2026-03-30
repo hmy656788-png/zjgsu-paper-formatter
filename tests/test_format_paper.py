@@ -662,6 +662,12 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertEqual(output_doc.paragraphs[5].style.name, "List Bullet")
             self.assertEqual(output_doc.paragraphs[6].paragraph_format.first_line_indent.pt, 0.0)
             self.assert_paragraph_has_numbering(output_doc.paragraphs[3], 0)
+            self.assertEqual(output_doc.paragraphs[3]._element.pPr.find(qn("w:keepNext")).get(qn("w:val")), "true")
+            self.assertEqual(output_doc.paragraphs[3]._element.pPr.find(qn("w:keepLines")).get(qn("w:val")), "true")
+            self.assertEqual(output_doc.paragraphs[6]._element.pPr.find(qn("w:keepNext")).get(qn("w:val")), "true")
+            self.assertEqual(output_doc.paragraphs[7]._element.pPr.find(qn("w:keepLines")).get(qn("w:val")), "true")
+            self.assertIsNone(output_doc.paragraphs[7]._element.pPr.find(qn("w:keepNext")))
+            self.assertEqual(output_doc.paragraphs[10]._element.pPr.find(qn("w:keepNext")).get(qn("w:val")), "true")
 
             body_run = output_doc.paragraphs[4].runs[0]
             table_run = output_doc.tables[0].cell(1, 1).paragraphs[0].runs[0]

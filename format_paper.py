@@ -24,6 +24,7 @@ import re
 import sys
 import logging
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -47,6 +48,23 @@ logger = logging.getLogger(__name__)
 FOOTNOTE_FONT_SIZE_PT = 10
 FOOTNOTE_XML_PATH = "word/footnotes.xml"
 FOOTNOTE_SKIP_TYPES = {"separator", "continuationSeparator", "continuationNotice"}
+DRAWING_XML_TAGS = frozenset(
+    {
+        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing",
+        "{urn:schemas-microsoft-com:vml}shape",
+        "{urn:schemas-microsoft-com:office:office}OLEObject",
+        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pict",
+    }
+)
+EQUATION_XML_TAGS = frozenset(
+    {
+        "{http://schemas.openxmlformats.org/officeDocument/2006/math}oMath",
+        "{http://schemas.openxmlformats.org/officeDocument/2006/math}oMathPara",
+        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}object",
+        "{urn:schemas-microsoft-com:office:office}OLEObject",
+        "{urn:schemas-microsoft-com:vml}shape",
+    }
+)
 
 
 def emit_progress(progress_callback, step: int, message: str, detail: str | None = None):
@@ -111,6 +129,7 @@ RE_ENGLISH_ABSTRACT_HEADING = re.compile(r"^(?:英文摘要|abstract)\s*$", re.I
 RE_ENGLISH_ABSTRACT = re.compile(r"^abstract\s*[:：]\s*", re.IGNORECASE)
 RE_ENGLISH_KEYWORDS = re.compile(r"^(?:keywords?|key\s*words?)\s*[:：]?\s*", re.IGNORECASE)
 RE_REFERENCES_HEADING = re.compile(r"^参\s*考\s*文\s*献\s*[:：]?\s*$")
+RE_CAPTION_NOTE = re.compile(r"^(?:注|说明|资料来源|数据来源|来源|source)\s*[:：]?\s*", re.IGNORECASE)
 RE_SECTION_HEADING = re.compile(
     r"^(致谢|附录|作者简介|基金项目|英文摘要|abstract|acknowledg(?:e)?ments?)\s*$",
     re.IGNORECASE,
@@ -185,6 +204,7 @@ class ParagraphType:
     HEADING_L3 = "heading_l3"        # 三级标题
     FIGURE_CAPTION = "figure_caption"  # 图标题
     TABLE_CAPTION = "table_caption"    # 表标题
+    CAPTION_NOTE = "caption_note"      # 图表附注/来源说明
     SECTION_HEADING = "section_heading"  # 非编号章节标题（如致谢/附录）
     REFERENCES_HEADING = "references_heading"  # 参考文献标题
     REFERENCE_ENTRY = "reference_entry"        # 参考文献条目
@@ -194,6 +214,21 @@ class ParagraphType:
     ENGLISH_ABSTRACT = "english_abstract"                  # 英文摘要正文
     ENGLISH_KEYWORDS = "english_keywords"                  # 英文关键词
     BODY = "body"                    # 正文段落
+
+
+@dataclass(slots=True)
+class ParagraphAnalysis:
+    """缓存单个段落的预分析结果，避免主流程重复做文本和 XML 扫描。"""
+
+    index: int
+    normalized_text: str
+    classified_type: str
+    caption_match: tuple[str, re.Match[str], str] | None
+    inferred_heading_type: str | None
+    has_drawing: bool
+    has_equation: bool
+    is_reference_entry_candidate: bool
+    is_caption_note_candidate: bool
 
 
 HEADING_LEVEL_BY_TYPE = {
@@ -223,9 +258,30 @@ HEADING_STYLE_NAME_TO_LEVEL = {
 # ============================================================
 # 段落分类函数
 # ============================================================
-def classify_paragraph(text: str) -> str:
+def match_caption_in_normalized_text(normalized_text: str):
+    """识别已规范化文本中的图/表标题。"""
+    normalized = (normalized_text or "").strip()
+    if not normalized or len(normalized) > CAPTION_MAX_LENGTH:
+        return None
+
+    figure_match = RE_FIGURE_CAPTION.match(normalized)
+    if figure_match:
+        return ParagraphType.FIGURE_CAPTION, figure_match, normalized
+
+    table_match = RE_TABLE_CAPTION.match(normalized)
+    if table_match:
+        return ParagraphType.TABLE_CAPTION, table_match, normalized
+
+    return None
+
+
+def classify_normalized_paragraph(
+    normalized_text: str,
+    *,
+    caption_match: tuple[str, re.Match[str], str] | None = None,
+) -> str:
     """
-    根据段落纯文本内容判断其类型。
+    根据已规范化的段落文本判断其类型。
 
     分类优先级（从高到低）：
       1. 摘要 → 包含"摘要："开头
@@ -239,12 +295,12 @@ def classify_paragraph(text: str) -> str:
       9. 正文 → 以上都不匹配时的默认类型
 
     Args:
-        text: 段落的纯文本内容（已 strip）
+        normalized_text: 已经做过空白规范化的段落文本
 
     Returns:
         ParagraphType 常量字符串
     """
-    stripped = normalize_text_for_matching(text)
+    stripped = (normalized_text or "").strip()
 
     if not stripped:
         return ParagraphType.BODY  # 空段落当作正文处理
@@ -283,12 +339,19 @@ def classify_paragraph(text: str) -> str:
     if RE_HEADING_L3.match(stripped):
         return ParagraphType.HEADING_L3
 
-    caption_match = match_caption(stripped)
+    if caption_match is None:
+        caption_match = match_caption_in_normalized_text(stripped)
     if caption_match:
         return caption_match[0]
 
     # 默认为正文
     return ParagraphType.BODY
+
+
+def classify_paragraph(text: str) -> str:
+    """根据段落纯文本内容判断其类型。"""
+    normalized_text = normalize_text_for_matching(text)
+    return classify_normalized_paragraph(normalized_text)
 
 
 def split_text_to_paragraphs(text: str) -> list[str]:
@@ -327,18 +390,7 @@ def match_caption(text: str):
     通过长度限制降低误把正文识别为图表标题的风险。
     """
     normalized = normalize_text_for_matching(text)
-    if not normalized or len(normalized) > CAPTION_MAX_LENGTH:
-        return None
-
-    figure_match = RE_FIGURE_CAPTION.match(normalized)
-    if figure_match:
-        return ParagraphType.FIGURE_CAPTION, figure_match, normalized
-
-    table_match = RE_TABLE_CAPTION.match(normalized)
-    if table_match:
-        return ParagraphType.TABLE_CAPTION, table_match, normalized
-
-    return None
+    return match_caption_in_normalized_text(normalized)
 
 
 def rebuild_caption_text(kind: str, number: int, match: re.Match) -> str:
@@ -348,9 +400,20 @@ def rebuild_caption_text(kind: str, number: int, match: re.Match) -> str:
     return f"{label} {number}" if not caption else f"{label} {number} {caption}"
 
 
-def is_title_candidate(text: str) -> bool:
+def is_caption_note_candidate(text: str, normalized_text: str | None = None) -> bool:
+    """判断段落是否像图表后的附注/来源说明。"""
+    normalized = normalized_text if normalized_text is not None else normalize_text_for_matching(text)
+    return bool(RE_CAPTION_NOTE.match(normalized))
+
+
+def is_title_candidate(
+    text: str,
+    *,
+    normalized_text: str | None = None,
+    classified_type: str | None = None,
+) -> bool:
     """判断一个段落是否像论文标题。"""
-    stripped = normalize_text_for_matching(text)
+    stripped = normalized_text if normalized_text is not None else normalize_text_for_matching(text)
 
     if not stripped:
         return False
@@ -364,15 +427,17 @@ def is_title_candidate(text: str) -> bool:
     if "@" in stripped or RE_TITLE_METADATA_PREFIX.match(stripped):
         return False
 
-    return classify_paragraph(stripped) == ParagraphType.BODY
+    para_type = classified_type if classified_type is not None else classify_normalized_paragraph(stripped)
+    return para_type == ParagraphType.BODY
 
 
-def is_reference_entry_text(text: str) -> bool:
+def is_reference_entry_text(text: str, normalized_text: str | None = None) -> bool:
     """判断参考文献段落是否具备常见的编号前缀。"""
-    return bool(RE_REFERENCE_ENTRY_TEXT.match(normalize_text_for_matching(text)))
+    normalized = normalized_text if normalized_text is not None else normalize_text_for_matching(text)
+    return bool(RE_REFERENCE_ENTRY_TEXT.match(normalized))
 
 
-def find_title_paragraph_index(paragraphs) -> int | None:
+def find_title_paragraph_index(paragraphs, analyses: list[ParagraphAnalysis] | None = None) -> int | None:
     """
     尝试识别论文主标题。
 
@@ -381,21 +446,38 @@ def find_title_paragraph_index(paragraphs) -> int | None:
     - 段落本身必须像标题
     - 后续 3 个非空段落内需要出现“摘要”或“关键词”
     """
-    non_empty = [
-        (index, normalize_text_for_matching(paragraph.text))
-        for index, paragraph in enumerate(paragraphs)
-        if normalize_text_for_matching(paragraph.text)
-    ]
+    if analyses is None:
+        non_empty = []
+        for index, paragraph in enumerate(paragraphs):
+            normalized_text = normalize_text_for_matching(paragraph.text)
+            if not normalized_text:
+                continue
+            non_empty.append(
+                (
+                    index,
+                    normalized_text,
+                    classify_normalized_paragraph(normalized_text),
+                )
+            )
+    else:
+        non_empty = [
+            (analysis.index, analysis.normalized_text, analysis.classified_type)
+            for analysis in analyses
+            if analysis.normalized_text
+        ]
 
     if not non_empty:
         return None
 
-    for candidate_position, (candidate_index, candidate_text) in enumerate(non_empty[:3]):
-        if not is_title_candidate(candidate_text):
+    for candidate_position, (candidate_index, candidate_text, candidate_type) in enumerate(non_empty[:3]):
+        if not is_title_candidate(
+            candidate_text,
+            normalized_text=candidate_text,
+            classified_type=candidate_type,
+        ):
             continue
 
-        for _, text in non_empty[candidate_position + 1:candidate_position + 4]:
-            para_type = classify_paragraph(text)
+        for _, text, para_type in non_empty[candidate_position + 1:candidate_position + 4]:
             if para_type in {
                 ParagraphType.ABSTRACT,
                 ParagraphType.KEYWORDS,
@@ -484,27 +566,32 @@ def _get_paragraph_outline_level_hint(paragraph) -> int | None:
     return HEADING_STYLE_NAME_TO_LEVEL.get(style_name.lower(), HEADING_STYLE_NAME_TO_LEVEL.get(style_name))
 
 
-def looks_like_unnumbered_heading(text: str) -> bool:
+def looks_like_unnumbered_heading(text: str, normalized_text: str | None = None) -> bool:
     """保守判断一段文字是否像“缺失编号的标题”。"""
-    normalized = normalize_text_for_matching(text)
+    normalized = normalized_text if normalized_text is not None else normalize_text_for_matching(text)
     if not normalized or len(normalized) > UNNUMBERED_HEADING_MAX_LENGTH:
         return False
 
     if normalized.endswith(("。", "！", "？", "!", "?", "；", ";", "，", ",", "：", ":")):
         return False
 
-    if RE_REFERENCE_ENTRY_TEXT.match(normalized):
+    if is_reference_entry_text(normalized, normalized_text=normalized):
         return False
 
-    if match_caption(normalized):
+    if match_caption_in_normalized_text(normalized):
         return False
 
     return True
 
 
-def infer_heading_type_from_paragraph(paragraph, text: str) -> str | None:
+def infer_heading_type_from_paragraph(
+    paragraph,
+    text: str,
+    normalized_text: str | None = None,
+) -> str | None:
     """根据段落原始样式/outline level，推断未编号标题的层级。"""
-    if not looks_like_unnumbered_heading(text):
+    normalized = normalized_text if normalized_text is not None else normalize_text_for_matching(text)
+    if not looks_like_unnumbered_heading(text, normalized_text=normalized):
         return None
 
     level = _get_paragraph_outline_level_hint(paragraph)
@@ -513,6 +600,58 @@ def infer_heading_type_from_paragraph(paragraph, text: str) -> str | None:
         1: ParagraphType.HEADING_L2,
         2: ParagraphType.HEADING_L3,
     }.get(level)
+
+
+def _build_paragraph_analyses(paragraphs) -> list[ParagraphAnalysis]:
+    """预分析所有正文段落，复用规范化文本、分类结果与公式探测。"""
+    analyses = []
+    for index, paragraph in enumerate(paragraphs):
+        raw_text = paragraph.text
+        normalized_text = normalize_text_for_matching(raw_text)
+        caption_match = match_caption_in_normalized_text(normalized_text)
+        classified_type = classify_normalized_paragraph(
+            normalized_text,
+            caption_match=caption_match,
+        )
+        has_drawing, has_equation = _scan_paragraph_content(paragraph)
+        inferred_heading_type = None
+        if classified_type == ParagraphType.BODY:
+            inferred_heading_type = infer_heading_type_from_paragraph(
+                paragraph,
+                raw_text,
+                normalized_text=normalized_text,
+            )
+
+        analyses.append(
+            ParagraphAnalysis(
+                index=index,
+                normalized_text=normalized_text,
+                classified_type=classified_type,
+                caption_match=caption_match,
+                inferred_heading_type=inferred_heading_type,
+                has_drawing=has_drawing,
+                has_equation=has_equation,
+                is_reference_entry_candidate=is_reference_entry_text(
+                    normalized_text,
+                    normalized_text=normalized_text,
+                ),
+                is_caption_note_candidate=is_caption_note_candidate(
+                    normalized_text,
+                    normalized_text=normalized_text,
+                ),
+            )
+        )
+
+    return analyses
+
+
+def _log_detected_paragraph(label: str, index: int, text: str) -> None:
+    """逐段调试日志仅在 DEBUG 下输出，避免大文档时产生过多日志 I/O。"""
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+
+    preview = text if len(text) <= 30 else f"{text[:30]}..."
+    logger.debug(f'  [{label}] 第{index + 1}段: "{preview}"')
 
 
 def resolve_heading_numbering_parts(
@@ -650,30 +789,34 @@ def iter_all_tables(tables):
 
 def _has_drawing(paragraph) -> bool:
     """判断段落中是否包含图片等 drawing 元素。"""
-    element = paragraph._element
-    tags = (
-        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing",
-        "{urn:schemas-microsoft-com:vml}shape",
-        "{urn:schemas-microsoft-com:office:office}OLEObject",
-        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pict",
-    )
-    return any(element.findall(".//" + tag) for tag in tags)
+    return _element_contains_any_tag(paragraph._element, DRAWING_XML_TAGS)
 
 
 def _has_equation_content(paragraph) -> bool:
     """判断段落中是否包含 Word 公式或嵌入式公式对象。"""
-    element = paragraph._element
-    equation_tags = (
-        "{http://schemas.openxmlformats.org/officeDocument/2006/math}oMath",
-        "{http://schemas.openxmlformats.org/officeDocument/2006/math}oMathPara",
-        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}object",
-        "{urn:schemas-microsoft-com:office:office}OLEObject",
-        "{urn:schemas-microsoft-com:vml}shape",
-    )
-    return any(
-        element.findall(".//" + tag)
-        for tag in equation_tags
-    )
+    return _element_contains_any_tag(paragraph._element, EQUATION_XML_TAGS)
+
+
+def _element_contains_any_tag(element, tags: frozenset[str]) -> bool:
+    """判断 XML 子树中是否包含任一目标标签。"""
+    return any(getattr(node, "tag", None) in tags for node in element.iter())
+
+
+def _scan_paragraph_content(paragraph) -> tuple[bool, bool]:
+    """单次扫描段落 XML，同时探测图片/对象与公式内容。"""
+    has_drawing = False
+    has_equation = False
+
+    for node in paragraph._element.iter():
+        tag = getattr(node, "tag", None)
+        if tag in DRAWING_XML_TAGS:
+            has_drawing = True
+        if tag in EQUATION_XML_TAGS:
+            has_equation = True
+        if has_drawing and has_equation:
+            break
+
+    return has_drawing, has_equation
 
 
 def _ensure_xml_child(parent, tag_name: str, *, prepend: bool = False):
@@ -1985,7 +2128,14 @@ def insert_table_of_contents(doc, title_index: int | None, heading_count: int) -
 # ============================================================
 # 各类型段落的格式化函数
 # ============================================================
-def format_body(paragraph, in_table: bool = False):
+def format_body(
+    paragraph,
+    in_table: bool = False,
+    *,
+    normalized_text: str | None = None,
+    has_equation: bool | None = None,
+    has_drawing: bool | None = None,
+):
     """
     正文格式：
       - 中文字体：宋体
@@ -1994,9 +2144,11 @@ def format_body(paragraph, in_table: bool = False):
       - 首行缩进：2 个中文字符（约 0.74cm × 2 ≈ 对于小四号字约 24pt）
       - 行距：1.5 倍行距
     """
-    normalized_text = normalize_text_for_matching(paragraph.text)
+    if normalized_text is None:
+        normalized_text = normalize_text_for_matching(paragraph.text)
     _set_paragraph_outline_level(paragraph, None)
-    has_equation = _has_equation_content(paragraph)
+    if has_equation is None:
+        has_equation = _has_equation_content(paragraph)
 
     if has_equation and not normalized_text:
         _clear_paragraph_style(paragraph)
@@ -2016,7 +2168,10 @@ def format_body(paragraph, in_table: bool = False):
         _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=12)
         return
 
-    if _has_drawing(paragraph) and not normalized_text:
+    if has_drawing is None:
+        has_drawing = _has_drawing(paragraph)
+
+    if has_drawing and not normalized_text:
         _set_paragraph_format(
             paragraph,
             alignment=paragraph.paragraph_format.alignment or WD_ALIGN_PARAGRAPH.CENTER,
@@ -2340,6 +2495,46 @@ def format_english_keywords(paragraph):
     )
 
 
+def format_caption_note(paragraph):
+    """
+    图表附注/来源格式：
+      - 左对齐
+      - 宋体 / Times New Roman，五号（10.5pt）
+      - 单倍行距
+      - 标签部分加粗，正文常规
+    """
+    _clear_paragraph_style(paragraph)
+    _set_paragraph_outline_level(paragraph, None)
+    _set_paragraph_format(
+        paragraph,
+        alignment=WD_ALIGN_PARAGRAPH.LEFT,
+        first_line_indent=Pt(0),
+        space_before=Pt(0),
+        space_after=Pt(0),
+        line_spacing=1.0,
+        line_spacing_rule=WD_LINE_SPACING.SINGLE,
+    )
+    _set_paragraph_pagination_flags(paragraph, widow_control=True)
+
+    full_text = paragraph.text
+    match = RE_CAPTION_NOTE.match(full_text)
+    if match:
+        label_text = full_text[:match.end()]
+        body_text = full_text[match.end():]
+
+        _remove_all_runs(paragraph)
+
+        run_label = paragraph.add_run(label_text)
+        _set_run_font(run_label, cn_font="宋体", en_font="Times New Roman", size_pt=10.5, bold=True)
+
+        if body_text:
+            run_body = paragraph.add_run(body_text)
+            _set_run_font(run_body, cn_font="宋体", en_font="Times New Roman", size_pt=10.5, bold=False)
+        return
+
+    _apply_run_fonts(paragraph, cn_font="宋体", en_font="Times New Roman", size_pt=10.5)
+
+
 def format_reference_entry(paragraph):
     """
     参考文献条目格式：
@@ -2481,6 +2676,7 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
         ParagraphType.HEADING_L3: 0,
         ParagraphType.FIGURE_CAPTION: 0,
         ParagraphType.TABLE_CAPTION: 0,
+        ParagraphType.CAPTION_NOTE: 0,
         ParagraphType.SECTION_HEADING: 0,
         ParagraphType.REFERENCES_HEADING: 0,
         ParagraphType.REFERENCE_ENTRY: 0,
@@ -2492,40 +2688,43 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
         ParagraphType.BODY: 0,
     }
 
-    title_index = find_title_paragraph_index(doc.paragraphs)
+    paragraphs = list(doc.paragraphs)
+    analyses = _build_paragraph_analyses(paragraphs)
+    title_index = find_title_paragraph_index(paragraphs, analyses)
     title_text = ""
     if title_index is not None:
-        title_text = normalize_text_for_matching(doc.paragraphs[title_index].text)
+        title_text = analyses[title_index].normalized_text
 
     page_setup = apply_document_layout(doc, title_text)
     emit_progress(
         progress_callback,
         1,
         "文档结构解析完成",
-        f"共 {len(doc.paragraphs)} 个段落，准备识别标题与摘要",
+        f"共 {len(paragraphs)} 个段落，准备识别标题与摘要",
     )
     outline = []
     in_references = False
     in_english_abstract = False
+    previous_nonempty_para_type = None
     figure_counter = 0
     table_counter = 0
     equation_paragraph_count = 0
     heading_number_state = [0, 0, 0]
-    total_paragraphs = len(doc.paragraphs)
+    total_paragraphs = len(paragraphs)
 
     # ---------- 4. 遍历并格式化每个段落 ----------
     emit_progress(progress_callback, 2, "正在识别标题层级与摘要结构")
-    for i, paragraph in enumerate(doc.paragraphs):
-        raw_text = paragraph.text
-        text = normalize_text_for_matching(raw_text)
-        para_type = ParagraphType.TITLE if i == title_index else classify_paragraph(raw_text)
+    for paragraph, analysis in zip(paragraphs, analyses):
+        i = analysis.index
+        text = analysis.normalized_text
+        para_type = ParagraphType.TITLE if i == title_index else analysis.classified_type
         inferred_heading = False
         if para_type == ParagraphType.BODY:
-            inferred_para_type = infer_heading_type_from_paragraph(paragraph, raw_text)
+            inferred_para_type = analysis.inferred_heading_type
             if inferred_para_type is not None:
                 para_type = inferred_para_type
                 inferred_heading = True
-        if _has_equation_content(paragraph):
+        if analysis.has_equation:
             equation_paragraph_count += 1
 
         if total_paragraphs and (
@@ -2549,7 +2748,7 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
                 ParagraphType.SECTION_HEADING,
             }:
                 in_references = False
-            elif is_reference_entry_text(text):
+            elif analysis.is_reference_entry_candidate:
                 para_type = ParagraphType.REFERENCE_ENTRY
             else:
                 in_references = False
@@ -2575,11 +2774,23 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
             else:
                 para_type = ParagraphType.ENGLISH_ABSTRACT
 
+        if (
+            para_type == ParagraphType.BODY
+            and text
+            and analysis.is_caption_note_candidate
+            and previous_nonempty_para_type in {
+                ParagraphType.FIGURE_CAPTION,
+                ParagraphType.TABLE_CAPTION,
+                ParagraphType.CAPTION_NOTE,
+            }
+        ):
+            para_type = ParagraphType.CAPTION_NOTE
+
         stats[para_type] += 1
         _append_outline_entry(outline, para_type, text)
 
         if para_type == ParagraphType.TITLE:
-            logger.info(f"  [论文标题] 第{i+1}段: \"{text}\"")
+            _log_detected_paragraph("论文标题", i, text)
             format_title(paragraph, text_override=text)
 
         elif para_type == ParagraphType.HEADING_L1:
@@ -2591,7 +2802,7 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
                 allow_auto_numbering=inferred_heading,
             )
             heading_label = "推断一级标题" if inferred_heading else "一级标题"
-            logger.info(f"  [{heading_label}] 第{i+1}段: \"{text}\"")
+            _log_detected_paragraph(heading_label, i, text)
             format_heading_l1(paragraph, text_override=heading_text)
             apply_native_heading_numbering(doc, paragraph, para_type, numbering_parts)
 
@@ -2604,7 +2815,7 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
                 allow_auto_numbering=inferred_heading,
             )
             heading_label = "推断二级标题" if inferred_heading else "二级标题"
-            logger.info(f"  [{heading_label}] 第{i+1}段: \"{text}\"")
+            _log_detected_paragraph(heading_label, i, text)
             format_heading_l2(paragraph, text_override=heading_text)
             apply_native_heading_numbering(doc, paragraph, para_type, numbering_parts)
 
@@ -2617,65 +2828,77 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
                 allow_auto_numbering=inferred_heading,
             )
             heading_label = "推断三级标题" if inferred_heading else "三级标题"
-            logger.info(f"  [{heading_label}] 第{i+1}段: \"{text}\"")
+            _log_detected_paragraph(heading_label, i, text)
             format_heading_l3(paragraph, text_override=heading_text)
             apply_native_heading_numbering(doc, paragraph, para_type, numbering_parts)
 
         elif para_type == ParagraphType.FIGURE_CAPTION:
             figure_counter += 1
-            caption_match = match_caption(raw_text)
+            caption_match = analysis.caption_match
             caption_text = rebuild_caption_text(ParagraphType.FIGURE_CAPTION, figure_counter, caption_match[1])
-            logger.info(f"  [图标题] 第{i+1}段: \"{caption_text}\"")
+            _log_detected_paragraph("图标题", i, caption_text)
             emit_progress(progress_callback, 2, f"识别到第 {figure_counter} 张图片标题")
             format_figure_table(paragraph, text_override=caption_text, keep_next=False)
 
         elif para_type == ParagraphType.TABLE_CAPTION:
             table_counter += 1
-            caption_match = match_caption(raw_text)
+            caption_match = analysis.caption_match
             caption_text = rebuild_caption_text(ParagraphType.TABLE_CAPTION, table_counter, caption_match[1])
-            logger.info(f"  [表标题] 第{i+1}段: \"{caption_text}\"")
+            _log_detected_paragraph("表标题", i, caption_text)
             emit_progress(progress_callback, 2, f"识别到第 {table_counter} 张表格标题")
             format_figure_table(paragraph, text_override=caption_text, keep_next=True)
 
         elif para_type == ParagraphType.SECTION_HEADING:
-            logger.info(f"  [非编号章节标题] 第{i+1}段: \"{text}\"")
+            _log_detected_paragraph("非编号章节标题", i, text)
             format_heading_l1(paragraph, text_override=text, outline_level=None)
 
         elif para_type == ParagraphType.REFERENCES_HEADING:
-            logger.info(f"  [参考文献标题] 第{i+1}段: \"{text}\"")
+            _log_detected_paragraph("参考文献标题", i, text)
             emit_progress(progress_callback, 2, "识别到参考文献区域")
             format_references_heading(paragraph, text_override=text)
 
         elif para_type == ParagraphType.REFERENCE_ENTRY:
-            logger.info(f"  [参考文献条目] 第{i+1}段: \"{text[:30]}...\"")
+            _log_detected_paragraph("参考文献条目", i, text)
             format_reference_entry(paragraph)
 
         elif para_type == ParagraphType.ABSTRACT:
-            logger.info(f"  [摘要段落] 第{i+1}段: \"{text[:30]}...\"")
+            _log_detected_paragraph("摘要段落", i, text)
             format_abstract_or_keywords(paragraph, RE_ABSTRACT)
 
         elif para_type == ParagraphType.KEYWORDS:
-            logger.info(f"  [关键词段] 第{i+1}段: \"{text[:30]}...\"")
+            _log_detected_paragraph("关键词段", i, text)
             format_abstract_or_keywords(paragraph, RE_KEYWORDS)
 
         elif para_type == ParagraphType.ENGLISH_ABSTRACT_HEADING:
-            logger.info(f"  [英文摘要标题] 第{i+1}段: \"{text}\"")
+            _log_detected_paragraph("英文摘要标题", i, text)
             format_english_abstract_heading(paragraph)
 
         elif para_type == ParagraphType.ENGLISH_ABSTRACT:
-            logger.info(f"  [英文摘要] 第{i+1}段: \"{text[:30]}...\"")
+            _log_detected_paragraph("英文摘要", i, text)
             if RE_ENGLISH_ABSTRACT.match(text):
                 format_english_abstract(paragraph, RE_ENGLISH_ABSTRACT)
             else:
                 format_english_abstract(paragraph)
 
         elif para_type == ParagraphType.ENGLISH_KEYWORDS:
-            logger.info(f"  [英文关键词] 第{i+1}段: \"{text[:30]}...\"")
+            _log_detected_paragraph("英文关键词", i, text)
             format_english_keywords(paragraph)
+
+        elif para_type == ParagraphType.CAPTION_NOTE:
+            _log_detected_paragraph("图表附注", i, text)
+            format_caption_note(paragraph)
 
         else:
             # 正文段落（含空段落）
-            format_body(paragraph)
+            format_body(
+                paragraph,
+                normalized_text=text,
+                has_equation=analysis.has_equation,
+                has_drawing=analysis.has_drawing,
+            )
+
+        if text:
+            previous_nonempty_para_type = para_type
 
     # ---------- 5. 处理表格内段落 ----------
     emit_progress(progress_callback, 3, "正在应用排版规则")
@@ -2736,6 +2959,7 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
     logger.info(f"  三级标题：{stats[ParagraphType.HEADING_L3]} 个")
     logger.info(f"  图标题：{stats[ParagraphType.FIGURE_CAPTION]} 个")
     logger.info(f"  表标题：{stats[ParagraphType.TABLE_CAPTION]} 个")
+    logger.info(f"  图表附注：{stats[ParagraphType.CAPTION_NOTE]} 个")
     logger.info(f"  非编号章节标题：{stats[ParagraphType.SECTION_HEADING]} 个")
     logger.info(f"  参考文献标题：{stats[ParagraphType.REFERENCES_HEADING]} 个")
     logger.info(f"  参考文献条目：{stats[ParagraphType.REFERENCE_ENTRY]} 条")

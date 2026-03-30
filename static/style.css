@@ -1218,9 +1218,13 @@ body {
 .app-footer {
   margin-top: var(--space-3xl);
   padding: var(--space-lg) 0;
+  padding-bottom: calc(var(--space-2xl) + env(safe-area-inset-bottom));
   text-align: center;
   font-size: 0.8rem;
   color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 .app-footer p:first-child {
@@ -1233,33 +1237,34 @@ body {
   font-size: 0.72rem;
   color: var(--text-muted);
   letter-spacing: 0.03em;
+  margin-bottom: var(--space-md);
 }
 
 .footer-github {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  margin-top: var(--space-sm);
-  padding: 6px 16px;
+  padding: 8px 24px;
   border-radius: var(--radius-full);
   border: 1px solid var(--border);
   color: var(--text-secondary);
   text-decoration: none;
-  font-size: 0.78rem;
+  font-size: 0.85rem;
   transition: all 0.3s;
+  background: var(--bg-card);
 }
 
 .footer-github:hover {
   color: var(--text-primary);
   border-color: var(--border-hover);
-  background: var(--bg-card);
+  background: var(--bg-card-hover);
 }
 
 .footer-signature {
-  margin-top: var(--space-md);
+  margin-bottom: var(--space-xl);
   padding: 0;
-  display: inline-flex;
+  display: flex;
   align-items: flex-end;
   gap: 10px;
 }
@@ -1577,18 +1582,18 @@ body {
 
   .app-footer {
     margin-top: var(--space-xl);
+    padding-bottom: calc(var(--space-2xl) + env(safe-area-inset-bottom));
   }
 
   .footer-github {
-    width: min(100%, 220px);
-    margin-left: auto;
-    margin-right: auto;
+    width: min(100%, 260px);
   }
 
   .footer-signature {
     flex-direction: column;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
+    margin-bottom: var(--space-lg);
   }
 }
 
@@ -1743,16 +1748,24 @@ body {
   /* 页脚 */
   .app-footer {
     margin-top: var(--space-xl);
-    font-size: 0.7rem;
+    font-size: 0.75rem;
+    padding-bottom: calc(var(--space-2xl) + env(safe-area-inset-bottom));
   }
 
   .footer-sub {
     font-size: 0.65rem;
+    margin-bottom: var(--space-lg);
   }
 
   .footer-signature {
     gap: 4px;
     padding: 0;
+    margin-bottom: var(--space-lg);
+  }
+  
+  .footer-github {
+    font-size: 0.8rem;
+    padding: 8px 20px;
   }
 
   .sign-name {

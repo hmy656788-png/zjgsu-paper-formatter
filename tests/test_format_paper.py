@@ -658,6 +658,8 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             table.cell(0, 1).text = "Python 3.11"
             table.cell(1, 0).text = "平台"
             table.cell(1, 1).text = "Cross-border E-commerce 2024"
+            doc.add_paragraph("注：样本区间为 2020-2024 年。")
+            doc.add_paragraph("来源：Python 爬取与企业年报整理。")
 
             doc.add_paragraph("参考文献")
             doc.add_paragraph("[9] Smith, John. Python-based trade analytics[J]. 2024.")
@@ -667,6 +669,7 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertIsInstance(summary, dict)
             self.assertEqual(summary["stats"]["figure_caption"], 2)
             self.assertEqual(summary["stats"]["table_caption"], 1)
+            self.assertEqual(summary["stats"]["caption_note"], 2)
             self.assertEqual(summary["table_paragraphs"], 4)
 
             output_doc = Document(str(output_path))
@@ -676,6 +679,8 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertEqual(output_doc.paragraphs[7].text, "图 1 系统架构图")
             self.assertEqual(output_doc.paragraphs[9].text, "图 2 模型流程图")
             self.assertEqual(output_doc.paragraphs[10].text, "表 1 样本描述统计")
+            self.assertEqual(output_doc.paragraphs[11].text, "注：样本区间为 2020-2024 年。")
+            self.assertEqual(output_doc.paragraphs[12].text, "来源：Python 爬取与企业年报整理。")
             self.assertEqual(output_doc.paragraphs[5].style.name, "List Bullet")
             self.assertEqual(output_doc.paragraphs[6].paragraph_format.first_line_indent.pt, 0.0)
             self.assert_paragraph_has_numbering(output_doc.paragraphs[3], 0)
@@ -686,14 +691,25 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertIsNone(output_doc.paragraphs[7]._element.pPr.find(qn("w:keepNext")))
             self.assertEqual(output_doc.paragraphs[10]._element.pPr.find(qn("w:keepNext")).get(qn("w:val")), "true")
             self.assertEqual(output_doc.paragraphs[4]._element.pPr.find(qn("w:widowControl")).get(qn("w:val")), "true")
-            self.assertEqual(output_doc.paragraphs[12]._element.pPr.find(qn("w:widowControl")).get(qn("w:val")), "true")
+            self.assertEqual(output_doc.paragraphs[11]._element.pPr.find(qn("w:widowControl")).get(qn("w:val")), "true")
+            self.assertEqual(output_doc.paragraphs[14]._element.pPr.find(qn("w:widowControl")).get(qn("w:val")), "true")
 
             body_run = output_doc.paragraphs[4].runs[0]
             table_run = output_doc.tables[0].cell(1, 1).paragraphs[0].runs[0]
             self.assert_run_uses_mixed_font_pair(self, body_run)
             self.assert_run_uses_mixed_font_pair(self, table_run)
 
-            reference_entry = output_doc.paragraphs[12]
+            caption_note = output_doc.paragraphs[11]
+            source_note = output_doc.paragraphs[12]
+            reference_entry = output_doc.paragraphs[14]
+            self.assertEqual(caption_note.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
+            self.assertAlmostEqual(caption_note.paragraph_format.first_line_indent.pt, 0.0, places=1)
+            self.assertEqual(caption_note.paragraph_format.line_spacing, 1.0)
+            self.assertTrue(caption_note.runs[0].font.bold)
+            self.assertEqual(caption_note.runs[0].font.size.pt, 10.5)
+            self.assertEqual(source_note.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
+            self.assertTrue(source_note.runs[0].font.bold)
+            self.assertEqual(source_note.runs[0].font.size.pt, 10.5)
             self.assertAlmostEqual(reference_entry.paragraph_format.left_indent.pt, 0.0, places=1)
             self.assertAlmostEqual(reference_entry.paragraph_format.first_line_indent.pt, 21.0, places=1)
             self.assertEqual(reference_entry.paragraph_format.line_spacing, 1.0)
@@ -760,6 +776,30 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertLessEqual(int(resized_shape.width), printable_width)
             self.assertEqual(int(resized_shape.width), int(resized_shape.height))
             self.assertLess(int(resized_shape.width), int(Inches(8)))
+
+    def test_format_academic_paper_does_not_misclassify_body_explanations_as_caption_notes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "body_explanation_input.docx"
+            output_path = temp_path / "body_explanation_output.docx"
+
+            doc = Document()
+            doc.add_paragraph("平台治理视角下数字化协同研究")
+            doc.add_paragraph("摘要：这是摘要内容。")
+            doc.add_paragraph("关键词：平台治理 协同")
+            doc.add_paragraph("说明：这是正文中的说明句，不应被当作图表附注。")
+            doc.save(str(input_path))
+
+            summary = format_academic_paper(str(input_path), str(output_path))
+
+            self.assertEqual(summary["stats"]["caption_note"], 0)
+
+            output_doc = Document(str(output_path))
+            body_paragraph = output_doc.paragraphs[3]
+            self.assertAlmostEqual(body_paragraph.paragraph_format.first_line_indent.pt, 24.0, places=1)
+            self.assertEqual(body_paragraph.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+            self.assertEqual(body_paragraph.runs[0].font.size.pt, 12.0)
+            self.assertFalse(body_paragraph.runs[0].font.bold)
 
     def test_generate_cover_page_inserts_cover_table_and_page_break(self):
         info_dict = {

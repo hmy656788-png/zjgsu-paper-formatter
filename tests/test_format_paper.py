@@ -5,6 +5,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 from docx import Document
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import parse_xml
 from docx.oxml.ns import qn
@@ -689,13 +690,18 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             bottom_left_borders = output_doc.tables[0].cell(1, 0)._tc.tcPr.find(qn("w:tcBorders"))
             first_row_tr_pr = output_doc.tables[0].rows[0]._tr.trPr
             second_row_tr_pr = output_doc.tables[0].rows[1]._tr.trPr
+            header_paragraph = output_doc.tables[0].cell(0, 0).paragraphs[0]
             self.assertIsNone(tbl_borders)
+            self.assertEqual(output_doc.tables[0].alignment, WD_TABLE_ALIGNMENT.CENTER)
+            self.assertEqual(output_doc.tables[0].cell(0, 0).vertical_alignment, WD_CELL_VERTICAL_ALIGNMENT.CENTER)
             self.assertEqual(top_left_borders.find(qn("w:top")).get(qn("w:val")), "single")
             self.assertEqual(top_left_borders.find(qn("w:bottom")).get(qn("w:val")), "single")
             self.assertEqual(top_left_borders.find(qn("w:left")).get(qn("w:val")), "none")
             self.assertEqual(top_left_borders.find(qn("w:right")).get(qn("w:val")), "none")
             self.assertEqual(bottom_left_borders.find(qn("w:top")).get(qn("w:val")), "none")
             self.assertEqual(bottom_left_borders.find(qn("w:bottom")).get(qn("w:val")), "single")
+            self.assertEqual(header_paragraph.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+            self.assertTrue(header_paragraph.runs[0].font.bold)
             self.assertEqual(first_row_tr_pr.find(qn("w:tblHeader")).get(qn("w:val")), "true")
             self.assertEqual(first_row_tr_pr.find(qn("w:cantSplit")).get(qn("w:val")), "true")
             self.assertEqual(second_row_tr_pr.find(qn("w:cantSplit")).get(qn("w:val")), "true")

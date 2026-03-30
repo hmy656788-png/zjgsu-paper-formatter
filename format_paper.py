@@ -1279,6 +1279,8 @@ def format_three_line_table(table):
     if not rows:
         return
 
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+
     _remove_table_borders(table)
     # 取消底层的表格样式以防底层隐藏线逻辑有奇怪的行为
     if table.style:
@@ -1296,6 +1298,25 @@ def format_three_line_table(table):
         _set_row_cant_split(row, enabled=True)
         
         for cell in row.cells:
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+
+            for paragraph in cell.paragraphs:
+                _set_paragraph_format(
+                    paragraph,
+                    alignment=WD_ALIGN_PARAGRAPH.CENTER if is_header else WD_ALIGN_PARAGRAPH.LEFT,
+                    first_line_indent=Pt(0),
+                    line_spacing=1.5,
+                    line_spacing_rule=WD_LINE_SPACING.MULTIPLE,
+                )
+                if is_header:
+                    _apply_run_fonts(
+                        paragraph,
+                        cn_font="宋体",
+                        en_font="Times New Roman",
+                        size_pt=12,
+                        bold=True,
+                    )
+
             # 第一行：画顶线和底线（粗一点或者普通的单线条）
             # 最后一行：画底线
             # 其他行：全部 none

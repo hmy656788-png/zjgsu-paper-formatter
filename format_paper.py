@@ -735,6 +735,38 @@ def _format_footnote_run_xml(run) -> bool:
     return changed
 
 
+def _format_footnote_paragraph_xml(paragraph) -> bool:
+    """统一脚注段落的行距、对齐和缩进。"""
+    changed = False
+    p_pr = paragraph.find(qn("w:pPr"))
+    if p_pr is None:
+        p_pr = OxmlElement("w:pPr")
+        paragraph.insert(0, p_pr)
+        changed = True
+
+    spacing = _ensure_xml_child(p_pr, "w:spacing")
+    changed |= _set_xml_attribute(spacing, "w:before", "0")
+    changed |= _set_xml_attribute(spacing, "w:after", "0")
+    changed |= _set_xml_attribute(spacing, "w:line", "240")
+    changed |= _set_xml_attribute(spacing, "w:lineRule", "auto")
+
+    ind = _ensure_xml_child(p_pr, "w:ind")
+    changed |= _set_xml_attribute(ind, "w:left", "0")
+    changed |= _set_xml_attribute(ind, "w:right", "0")
+    changed |= _set_xml_attribute(ind, "w:firstLine", "0")
+    if ind.get(qn("w:hanging")) is not None:
+        del ind.attrib[qn("w:hanging")]
+        changed = True
+
+    jc = _ensure_xml_child(p_pr, "w:jc")
+    changed |= _set_xml_attribute(jc, "w:val", "left")
+
+    widow_control = _ensure_xml_child(p_pr, "w:widowControl")
+    changed |= _set_xml_attribute(widow_control, "w:val", "true")
+
+    return changed
+
+
 def _rewrite_docx_part(docx_path: str | Path, part_name: str, transform) -> int:
     """
     重写 docx 中指定部件。
@@ -799,6 +831,8 @@ def format_docx_footnotes(docx_path: str | Path) -> int:
                     pass
 
             footnote_changed = False
+            for paragraph in footnote.findall("./" + qn("w:p")):
+                footnote_changed |= _format_footnote_paragraph_xml(paragraph)
             for run in footnote.findall(".//" + qn("w:r")):
                 footnote_changed |= _format_footnote_run_xml(run)
 

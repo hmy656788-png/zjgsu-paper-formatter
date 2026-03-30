@@ -592,9 +592,14 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
                 for node in footnotes_root.findall(qn("w:footnote"))
                 if node.get(qn("w:id")) == "2"
             )
+            footnote_paragraph = footnote.find(qn("w:p"))
             runs = footnote.findall(".//" + qn("w:r"))
             reference_rpr = runs[0].find(qn("w:rPr"))
             content_rpr = runs[1].find(qn("w:rPr"))
+            footnote_ppr = footnote_paragraph.find(qn("w:pPr"))
+            footnote_spacing = footnote_ppr.find(qn("w:spacing"))
+            footnote_indent = footnote_ppr.find(qn("w:ind"))
+            footnote_jc = footnote_ppr.find(qn("w:jc"))
 
             self.assertEqual(reference_rpr.find(qn("w:rStyle")).get(qn("w:val")), "FootnoteReference")
             self.assertEqual(reference_rpr.find(qn("w:vertAlign")).get(qn("w:val")), "superscript")
@@ -602,6 +607,15 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertEqual(content_rpr.find(qn("w:rFonts")).get(qn("w:eastAsia")), "宋体")
             self.assertEqual(content_rpr.find(qn("w:rFonts")).get(qn("w:ascii")), "Times New Roman")
             self.assertEqual(content_rpr.find(qn("w:sz")).get(qn("w:val")), "20")
+            self.assertEqual(footnote_spacing.get(qn("w:before")), "0")
+            self.assertEqual(footnote_spacing.get(qn("w:after")), "0")
+            self.assertEqual(footnote_spacing.get(qn("w:line")), "240")
+            self.assertEqual(footnote_spacing.get(qn("w:lineRule")), "auto")
+            self.assertEqual(footnote_indent.get(qn("w:left")), "0")
+            self.assertEqual(footnote_indent.get(qn("w:right")), "0")
+            self.assertEqual(footnote_indent.get(qn("w:firstLine")), "0")
+            self.assertEqual(footnote_jc.get(qn("w:val")), "left")
+            self.assertEqual(footnote_ppr.find(qn("w:widowControl")).get(qn("w:val")), "true")
 
     def test_format_academic_paper_handles_complex_doc_with_images_table_and_lists(self):
         tiny_png = base64.b64decode(

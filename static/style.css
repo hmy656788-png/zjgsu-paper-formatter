@@ -1253,6 +1253,7 @@ body {
   font-size: 0.85rem;
   transition: all 0.3s;
   background: var(--bg-card);
+  margin-bottom: var(--space-lg);
 }
 
 .footer-github:hover {
@@ -1262,7 +1263,7 @@ body {
 }
 
 .footer-signature {
-  margin-bottom: var(--space-xl);
+  margin-top: 0;
   padding: 0;
   display: flex;
   align-items: flex-end;
@@ -1593,7 +1594,6 @@ body {
     flex-direction: column;
     align-items: center;
     gap: 6px;
-    margin-bottom: var(--space-lg);
   }
 }
 
@@ -1760,7 +1760,6 @@ body {
   .footer-signature {
     gap: 4px;
     padding: 0;
-    margin-bottom: var(--space-lg);
   }
   
   .footer-github {

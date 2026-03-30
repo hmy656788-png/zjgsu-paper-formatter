@@ -12,6 +12,7 @@ from docx.shared import Inches
 
 from format_paper import (
     apply_document_layout,
+    ensure_document_ends_with_page_break,
     find_title_paragraph_index,
     format_academic_paper,
     format_academic_paper_from_text,
@@ -495,11 +496,13 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             tbl_borders = output_doc.tables[0]._tbl.tblPr.find(qn("w:tblBorders"))
             top_left_borders = output_doc.tables[0].cell(0, 0)._tc.tcPr.find(qn("w:tcBorders"))
             bottom_left_borders = output_doc.tables[0].cell(1, 0)._tc.tcPr.find(qn("w:tcBorders"))
-            self.assertEqual(tbl_borders.find(qn("w:top")).get(qn("w:val")), "single")
-            self.assertEqual(tbl_borders.find(qn("w:bottom")).get(qn("w:val")), "single")
-            self.assertEqual(tbl_borders.find(qn("w:insideV")).get(qn("w:val")), "none")
+            self.assertIsNone(tbl_borders)
+            self.assertEqual(top_left_borders.find(qn("w:top")).get(qn("w:val")), "single")
             self.assertEqual(top_left_borders.find(qn("w:bottom")).get(qn("w:val")), "single")
-            self.assertEqual(bottom_left_borders.find(qn("w:bottom")).get(qn("w:val")), "none")
+            self.assertEqual(top_left_borders.find(qn("w:left")).get(qn("w:val")), "none")
+            self.assertEqual(top_left_borders.find(qn("w:right")).get(qn("w:val")), "none")
+            self.assertEqual(bottom_left_borders.find(qn("w:top")).get(qn("w:val")), "none")
+            self.assertEqual(bottom_left_borders.find(qn("w:bottom")).get(qn("w:val")), "single")
 
     def test_format_academic_paper_scales_oversized_images_to_page_width(self):
         tiny_png = base64.b64decode(
@@ -617,6 +620,15 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
 
         self.assertFalse(generate_cover_page(doc, {"student_name": "何旻洋"}))
         self.assertEqual([paragraph.text for paragraph in doc.paragraphs], ["正文内容"])
+
+    def test_ensure_document_ends_with_page_break_appends_break(self):
+        doc = Document()
+        doc.add_paragraph("封面内容")
+
+        ensure_document_ends_with_page_break(doc)
+
+        self.assertTrue(doc.paragraphs)
+        self.assertIn('w:type="page"', doc.paragraphs[-1]._element.xml)
 
 
 if __name__ == "__main__":

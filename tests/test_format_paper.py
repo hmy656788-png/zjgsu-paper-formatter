@@ -2,6 +2,7 @@ import base64
 import tempfile
 import unittest
 from pathlib import Path
+from zipfile import ZipFile
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -9,6 +10,7 @@ from docx.oxml import parse_xml
 from docx.oxml.ns import qn
 from docx.oxml.ns import nsdecls
 from docx.shared import Inches
+from lxml import etree
 
 from format_paper import (
     apply_document_layout,
@@ -22,6 +24,10 @@ from format_paper import (
 
 
 class FormatPaperFromTextTestCase(unittest.TestCase):
+    CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
+    PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+    FOOTNOTE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes"
+
     @staticmethod
     def assert_run_uses_mixed_font_pair(test_case, run):
         r_fonts = run._element.rPr.rFonts
@@ -48,6 +54,82 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             start_override = lvl_override.find(qn("w:startOverride"))
             self.assertIsNotNone(start_override)
             self.assertEqual(start_override.get(qn("w:val")), str(start_value))
+
+    def inject_simple_footnote(self, docx_path: Path, footnote_text: str):
+        with ZipFile(docx_path, "r") as source:
+            entries = source.infolist()
+            payloads = {entry.filename: source.read(entry.filename) for entry in entries}
+
+        content_types = etree.fromstring(payloads["[Content_Types].xml"])
+        override_tag = f"{{{self.CONTENT_TYPES_NS}}}Override"
+        if not any(node.get("PartName") == "/word/footnotes.xml" for node in content_types.findall(override_tag)):
+            override = etree.Element(override_tag)
+            override.set("PartName", "/word/footnotes.xml")
+            override.set(
+                "ContentType",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml",
+            )
+            content_types.append(override)
+        payloads["[Content_Types].xml"] = etree.tostring(
+            content_types,
+            encoding="UTF-8",
+            xml_declaration=True,
+            standalone=True,
+        )
+
+        rels = etree.fromstring(payloads["word/_rels/document.xml.rels"])
+        relationship_tag = f"{{{self.PACKAGE_REL_NS}}}Relationship"
+        if not any(node.get("Type") == self.FOOTNOTE_REL_TYPE for node in rels.findall(relationship_tag)):
+            relationship = etree.Element(relationship_tag)
+            relationship.set("Id", "rIdFootnotes")
+            relationship.set("Type", self.FOOTNOTE_REL_TYPE)
+            relationship.set("Target", "footnotes.xml")
+            rels.append(relationship)
+        payloads["word/_rels/document.xml.rels"] = etree.tostring(
+            rels,
+            encoding="UTF-8",
+            xml_declaration=True,
+            standalone=True,
+        )
+
+        document_xml = etree.fromstring(payloads["word/document.xml"])
+        body = document_xml.find(qn("w:body"))
+        target_paragraph = body.findall(qn("w:p"))[-1]
+        target_paragraph.append(
+            parse_xml(
+                f'<w:r {nsdecls("w")}>'
+                '<w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr>'
+                '<w:footnoteReference w:id="2"/>'
+                "</w:r>"
+            )
+        )
+        payloads["word/document.xml"] = etree.tostring(
+            document_xml,
+            encoding="UTF-8",
+            xml_declaration=True,
+            standalone=True,
+        )
+
+        payloads["word/footnotes.xml"] = (
+            f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            f'<w:footnotes {nsdecls("w")}>'
+            '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>'
+            '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>'
+            '<w:footnote w:id="2"><w:p>'
+            '<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteRef/></w:r>'
+            f"<w:r><w:t xml:space=\"preserve\"> {footnote_text}</w:t></w:r>"
+            "</w:p></w:footnote>"
+            "</w:footnotes>"
+        ).encode("utf-8")
+
+        with ZipFile(docx_path, "w") as target:
+            written = set()
+            for entry in entries:
+                target.writestr(entry, payloads[entry.filename])
+                written.add(entry.filename)
+            for name, data in payloads.items():
+                if name not in written:
+                    target.writestr(name, data)
 
     def test_split_text_to_paragraphs_normalizes_line_endings(self):
         text = "第一段\r\n\r\n第二段\r第三段\n"
@@ -418,6 +500,44 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertIn("oMath", preserved_equation._element.xml)
             self.assertEqual(preserved_equation.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
             self.assertEqual(preserved_equation.paragraph_format.first_line_indent.pt, 0.0)
+
+    def test_format_academic_paper_unifies_footnote_fonts_and_sizes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "footnote_input.docx"
+            output_path = temp_path / "footnote_output.docx"
+
+            doc = Document()
+            doc.add_paragraph("含脚注的论文标题")
+            doc.add_paragraph("摘要：这是摘要内容")
+            doc.add_paragraph("关键词：脚注 测试")
+            doc.add_paragraph("正文里有一个脚注引用")
+            doc.save(str(input_path))
+            self.inject_simple_footnote(input_path, "脚注内容 Footnote 123")
+
+            summary = format_academic_paper(str(input_path), str(output_path))
+
+            self.assertEqual(summary["formatted_footnotes"], 1)
+
+            with ZipFile(output_path, "r") as archive:
+                footnotes_xml = archive.read("word/footnotes.xml")
+
+            footnotes_root = etree.fromstring(footnotes_xml)
+            footnote = next(
+                node
+                for node in footnotes_root.findall(qn("w:footnote"))
+                if node.get(qn("w:id")) == "2"
+            )
+            runs = footnote.findall(".//" + qn("w:r"))
+            reference_rpr = runs[0].find(qn("w:rPr"))
+            content_rpr = runs[1].find(qn("w:rPr"))
+
+            self.assertEqual(reference_rpr.find(qn("w:rStyle")).get(qn("w:val")), "FootnoteReference")
+            self.assertEqual(reference_rpr.find(qn("w:vertAlign")).get(qn("w:val")), "superscript")
+            self.assertEqual(reference_rpr.find(qn("w:sz")).get(qn("w:val")), "20")
+            self.assertEqual(content_rpr.find(qn("w:rFonts")).get(qn("w:eastAsia")), "宋体")
+            self.assertEqual(content_rpr.find(qn("w:rFonts")).get(qn("w:ascii")), "Times New Roman")
+            self.assertEqual(content_rpr.find(qn("w:sz")).get(qn("w:val")), "20")
 
     def test_format_academic_paper_handles_complex_doc_with_images_table_and_lists(self):
         tiny_png = base64.b64decode(

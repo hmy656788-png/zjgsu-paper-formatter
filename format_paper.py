@@ -23,7 +23,9 @@
 import re
 import sys
 import logging
+import tempfile
 from pathlib import Path
+from zipfile import ZipFile
 
 from docx import Document
 from docx.shared import Pt, RGBColor, Cm
@@ -31,6 +33,7 @@ from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK, WD_LINE_SPACING
 from docx.oxml.ns import qn, nsdecls
 from docx.oxml import OxmlElement, parse_xml
+from lxml import etree
 
 # ============================================================
 # 日志配置
@@ -40,6 +43,10 @@ logging.basicConfig(
     format="[%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+FOOTNOTE_FONT_SIZE_PT = 10
+FOOTNOTE_XML_PATH = "word/footnotes.xml"
+FOOTNOTE_SKIP_TYPES = {"separator", "continuationSeparator", "continuationNotice"}
 
 
 def emit_progress(progress_callback, step: int, message: str, detail: str | None = None):
@@ -555,6 +562,151 @@ def _has_equation_content(paragraph) -> bool:
         element.findall(".//" + tag)
         for tag in equation_tags
     )
+
+
+def _ensure_xml_child(parent, tag_name: str, *, prepend: bool = False):
+    """确保底层 XML 节点存在，便于对 DOCX 压缩包中的部件做后处理。"""
+    child = parent.find(qn(tag_name))
+    if child is not None:
+        return child
+
+    child = OxmlElement(tag_name)
+    if prepend:
+        parent.insert(0, child)
+    else:
+        parent.append(child)
+    return child
+
+
+def _set_xml_attribute(element, attr_name: str, value: str) -> bool:
+    """仅在属性值变化时写入，便于统计 XML 是否被修改。"""
+    attr = qn(attr_name)
+    if element.get(attr) == value:
+        return False
+
+    element.set(attr, value)
+    return True
+
+
+def _format_footnote_run_xml(run) -> bool:
+    """统一脚注 run 的中西文字体和字号。"""
+    changed = False
+    r_pr = run.find(qn("w:rPr"))
+    if r_pr is None:
+        r_pr = OxmlElement("w:rPr")
+        run.insert(0, r_pr)
+        changed = True
+
+    r_fonts = r_pr.find(qn("w:rFonts"))
+    if r_fonts is None:
+        r_fonts = OxmlElement("w:rFonts")
+        r_pr.insert(0, r_fonts)
+        changed = True
+
+    changed |= _set_xml_attribute(r_fonts, "w:eastAsia", "宋体")
+    changed |= _set_xml_attribute(r_fonts, "w:ascii", "Times New Roman")
+    changed |= _set_xml_attribute(r_fonts, "w:hAnsi", "Times New Roman")
+    changed |= _set_xml_attribute(r_fonts, "w:cs", "Times New Roman")
+
+    size_val = str(int(FOOTNOTE_FONT_SIZE_PT * 2))
+    size = _ensure_xml_child(r_pr, "w:sz")
+    size_cs = _ensure_xml_child(r_pr, "w:szCs")
+    changed |= _set_xml_attribute(size, "w:val", size_val)
+    changed |= _set_xml_attribute(size_cs, "w:val", size_val)
+
+    if run.find(qn("w:footnoteRef")) is not None or run.find(qn("w:footnoteReference")) is not None:
+        r_style = _ensure_xml_child(r_pr, "w:rStyle", prepend=True)
+        vert_align = _ensure_xml_child(r_pr, "w:vertAlign")
+        changed |= _set_xml_attribute(r_style, "w:val", "FootnoteReference")
+        changed |= _set_xml_attribute(vert_align, "w:val", "superscript")
+
+    return changed
+
+
+def _rewrite_docx_part(docx_path: str | Path, part_name: str, transform) -> int:
+    """
+    重写 docx 中指定部件。
+
+    transform 回调返回 `(new_bytes, count, changed)`。
+    """
+    docx_file = Path(docx_path)
+    if not docx_file.exists():
+        return 0
+
+    with ZipFile(docx_file, "r") as source:
+        if part_name not in source.namelist():
+            return 0
+
+        entries = source.infolist()
+        payloads = {entry.filename: source.read(entry.filename) for entry in entries}
+
+    new_bytes, count, changed = transform(payloads[part_name])
+    if not changed:
+        return count
+
+    payloads[part_name] = new_bytes
+
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+        temp_path = Path(handle.name)
+
+    try:
+        with ZipFile(temp_path, "w") as target:
+            for entry in entries:
+                target.writestr(entry, payloads[entry.filename])
+        temp_path.replace(docx_file)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    return count
+
+
+def format_docx_footnotes(docx_path: str | Path) -> int:
+    """
+    统一脚注正文的字体与字号。
+
+    `python-docx` 目前缺少稳定的脚注公开 API，因此这里在文档保存后
+    直接修正 `word/footnotes.xml` 中的 run 属性，尽量以最小改动覆盖
+    真实论文里常见的“脚注字号/字体不统一”问题。
+    """
+    def transform(xml_bytes: bytes):
+        root = etree.fromstring(xml_bytes)
+        formatted_count = 0
+        changed = False
+
+        for footnote in root.findall(qn("w:footnote")):
+            footnote_type = footnote.get(qn("w:type"))
+            footnote_id = footnote.get(qn("w:id"))
+            if footnote_type in FOOTNOTE_SKIP_TYPES:
+                continue
+
+            if footnote_id is not None:
+                try:
+                    if int(footnote_id) < 0:
+                        continue
+                except ValueError:
+                    pass
+
+            footnote_changed = False
+            for run in footnote.findall(".//" + qn("w:r")):
+                footnote_changed |= _format_footnote_run_xml(run)
+
+            if footnote_changed:
+                formatted_count += 1
+                changed = True
+
+        xml_output = etree.tostring(
+            root,
+            encoding="UTF-8",
+            xml_declaration=True,
+            standalone=True,
+        )
+        return xml_output, formatted_count, changed
+
+    try:
+        return _rewrite_docx_part(docx_path, FOOTNOTE_XML_PATH, transform)
+    except Exception as exc:
+        logger.warning(f"统一脚注格式时出现警告：{exc}")
+        return 0
 
 
 def _set_paragraph_format(
@@ -2264,6 +2416,7 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
     insert_table_of_contents(doc, title_index, heading_count)
     resized_image_count = constrain_inline_images(doc, progress_callback=progress_callback)
     cover_generated = False
+    formatted_footnote_count = 0
     resolved_cover_info = prepare_cover_info(cover_info, title_text)
     if resolved_cover_info is not None:
         emit_progress(progress_callback, 3, "正在生成课程论文封面")
@@ -2277,6 +2430,8 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
         doc.save(output_path)
+        emit_progress(progress_callback, 4, "正在统一脚注字体与字号")
+        formatted_footnote_count = format_docx_footnotes(output_path)
         logger.info(f"排版完成！已保存至：{output_path}")
     except Exception as e:
         logger.error(f"无法保存文档 {output_path}：{e}")
@@ -2302,6 +2457,7 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
     logger.info(f"  正文段落：{stats[ParagraphType.BODY]} 个")
     logger.info(f"  表格内段落：{table_paragraph_count} 个")
     logger.info(f"  公式段落：{equation_paragraph_count} 个")
+    logger.info(f"  已统一脚注：{formatted_footnote_count} 条")
     logger.info(f"  自动缩放图片：{resized_image_count} 张")
     logger.info(f"  自动封面：{'已生成' if cover_generated else '未生成'}")
     logger.info("=" * 50)
@@ -2312,6 +2468,7 @@ def _process_document(doc, output_path: str, progress_callback=None, cover_info=
         "page_setup": page_setup,
         "table_paragraphs": table_paragraph_count,
         "equation_paragraphs": equation_paragraph_count,
+        "formatted_footnotes": formatted_footnote_count,
         "resized_images": resized_image_count,
         "cover_generated": cover_generated,
         "outline": outline,
@@ -2381,6 +2538,10 @@ def merge_cover_and_body(cover_path: str, body_path: str, output_path: str, prog
         output_file.parent.mkdir(parents=True, exist_ok=True)
         emit_progress(progress_callback, 4, "正在写入合并后的输出文档")
         composer.save(output_path)
+        emit_progress(progress_callback, 4, "正在统一合并文档中的脚注格式")
+        formatted_footnote_count = format_docx_footnotes(output_path)
+        if isinstance(body_result, dict):
+            body_result["formatted_footnotes"] = formatted_footnote_count
 
         logger.info(f"合并完成！封面 + 排版正文 → {output_path}")
         return body_result

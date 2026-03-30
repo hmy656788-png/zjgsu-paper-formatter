@@ -198,6 +198,7 @@ def normalize_format_summary(result) -> dict:
             "title_text": result.get("title_text", ""),
             "table_paragraphs": result.get("table_paragraphs", 0),
             "equation_paragraphs": result.get("equation_paragraphs", 0),
+            "formatted_footnotes": result.get("formatted_footnotes", 0),
             "resized_images": result.get("resized_images", 0),
             "cover_generated": result.get("cover_generated", False),
         }
@@ -209,6 +210,7 @@ def normalize_format_summary(result) -> dict:
         "title_text": "",
         "table_paragraphs": 0,
         "equation_paragraphs": 0,
+        "formatted_footnotes": 0,
         "resized_images": 0,
         "cover_generated": False,
     }
@@ -234,6 +236,7 @@ def build_preview(summary: dict) -> dict:
     title_text = (summary.get("title_text") or "").strip()
     cover_generated = bool(summary.get("cover_generated"))
     equation_paragraphs = int(summary.get("equation_paragraphs", 0) or 0)
+    formatted_footnotes = int(summary.get("formatted_footnotes", 0) or 0)
 
     top_margin = page_setup.get("margins_cm", {}).get("top", 2.54)
     left_margin = page_setup.get("margins_cm", {}).get("left", 3.18)
@@ -256,6 +259,8 @@ def build_preview(summary: dict) -> dict:
             structure_bits.append(describe_structure_count(count, label, unit))
     if equation_paragraphs:
         structure_bits.append(describe_structure_count(equation_paragraphs, "公式段落", "个"))
+    if formatted_footnotes:
+        structure_bits.append(describe_structure_count(formatted_footnotes, "脚注", "条"))
 
     structure_description = "、".join(structure_bits) or "正文段落已统一为小四、首行缩进和 1.5 倍行距"
     page_description = f"纸张为 A4，上下 {top_margin:.2f} cm，左右 {left_margin:.2f} cm"

@@ -38,6 +38,30 @@
         <button class="tab-btn" id="tabPaste">黏贴文字</button>
       </div>
 
+      <section class="format-options-panel" id="formatOptionsPanel">
+        <div class="format-options-head">
+          <h3 class="format-options-title">排版选项</h3>
+          <p class="format-options-hint">默认会启用常用自动处理；你也可以按这次论文的需要单独关闭某些步骤。</p>
+        </div>
+        <div class="format-options-grid">
+          <label class="format-option-card" for="optionInsertToc">
+            <input type="checkbox" id="optionInsertToc" checked />
+            <span class="format-option-name">自动插入目录</span>
+            <span class="format-option-desc">识别到足够标题层级时，在正文前生成 Word 自动目录字段。</span>
+          </label>
+          <label class="format-option-card" for="optionResizeImages">
+            <input type="checkbox" id="optionResizeImages" checked />
+            <span class="format-option-name">自动缩放图片</span>
+            <span class="format-option-desc">超出版心的图片会按比例缩小，减少页宽溢出和打印错位。</span>
+          </label>
+          <label class="format-option-card" for="optionFormatFootnotes">
+            <input type="checkbox" id="optionFormatFootnotes" checked />
+            <span class="format-option-name">统一整理脚注</span>
+            <span class="format-option-desc">输出前自动统一脚注字号和字体，适合带引用说明的论文。</span>
+          </label>
+        </div>
+      </section>
+
       <!-- ====== 黏贴区域 ====== -->
       <section class="paste-section hidden" id="pasteSection">
         <textarea id="pasteArea" class="paste-area" placeholder="请在此处黏贴未排版的论文文本内容..."></textarea>

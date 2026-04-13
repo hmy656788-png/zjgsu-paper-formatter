@@ -7,6 +7,7 @@
   const $ = (sel) => document.querySelector(sel);
   const tabUpload = $("#tabUpload");
   const tabPaste = $("#tabPaste");
+  const formatOptionsPanel = $("#formatOptionsPanel");
   const uploadSection = $("#uploadSection");
   const pasteSection = $("#pasteSection");
   const pasteArea = $("#pasteArea");
@@ -28,6 +29,9 @@
   const btnReset = $("#btnReset");
   const btnRetry = $("#btnRetry");
   const retryLabel = $("#retryLabel");
+  const optionInsertToc = $("#optionInsertToc");
+  const optionResizeImages = $("#optionResizeImages");
+  const optionFormatFootnotes = $("#optionFormatFootnotes");
 
   // 封面（可选）
   const coverZone = $("#coverZone");
@@ -72,6 +76,13 @@
   let currentRequestController = null;
   let currentEventSource = null;
   let isSubmitting = false;
+  const runtimeCapabilities = {
+    asyncJobs: false,
+    sseProgress: false,
+    runtimeEnvironment: "unknown",
+    loaded: false,
+  };
+  let runtimeCapabilitiesPromise = null;
 
   // ====== 背景粒子 ======
   function initParticles() {
@@ -119,6 +130,10 @@
   function showSection(sec) {
     [uploadSection, pasteSection, filePreview, processingSection, resultSection, errorSection].forEach((s) => { if (s) s.classList.add("hidden"); });
     if (sec) sec.classList.remove("hidden");
+    if (formatOptionsPanel) {
+      const shouldShowOptions = sec === uploadSection || sec === pasteSection || sec === filePreview;
+      formatOptionsPanel.classList.toggle("hidden", !shouldShowOptions);
+    }
   }
 
   function showUpload() {
@@ -247,13 +262,41 @@
     } catch { return { success: false, error: fb }; }
   }
 
+  async function loadRuntimeCapabilities() {
+    if (runtimeCapabilities.loaded) return runtimeCapabilities;
+    if (!runtimeCapabilitiesPromise) {
+      runtimeCapabilitiesPromise = (async () => {
+        try {
+          const res = await fetch("/api/health", { cache: "no-store" });
+          const data = await parseApiResponse(res, "获取服务状态失败，请稍后重试。");
+          if (res.ok && data && data.success) {
+            const features = data.features || {};
+            const runtime = data.runtime || {};
+            runtimeCapabilities.asyncJobs = features.async_jobs === true;
+            runtimeCapabilities.sseProgress = features.sse_progress === true;
+            runtimeCapabilities.runtimeEnvironment = runtime.environment || "unknown";
+          }
+        } catch {}
+        runtimeCapabilities.loaded = true;
+        return runtimeCapabilities;
+      })();
+    }
+    return runtimeCapabilitiesPromise;
+  }
+
+  function getSyncFallbackMessage(reason) {
+    if (reason === "browser") return "当前浏览器不支持实时进度，已自动切换为同步处理。";
+    if (runtimeCapabilities.runtimeEnvironment === "serverless") return "当前部署环境已自动切换为同步处理，完成后会直接展示结果。";
+    return "当前服务未开启实时进度，已自动切换为同步处理。";
+  }
+
   // ====== 动画 ======
   function stopResultReveal() { if (resultRevealTimer !== null) { clearTimeout(resultRevealTimer); resultRevealTimer = null; } }
   function stopStepAnimation() { if (stepAnimationTimer !== null) { clearInterval(stepAnimationTimer); stepAnimationTimer = null; } }
   function closeProgressStream() { if (currentEventSource) { currentEventSource.close(); currentEventSource = null; } }
 
   function syncBusyState() {
-    [tabUpload, tabPaste, pasteArea, btnFormatText, fileRemove, btnFormat, coverFileRemove].forEach((el) => { if (el) el.disabled = isSubmitting; });
+    [tabUpload, tabPaste, pasteArea, btnFormatText, fileRemove, btnFormat, coverFileRemove, optionInsertToc, optionResizeImages, optionFormatFootnotes].forEach((el) => { if (el) el.disabled = isSubmitting; });
     [coverMetaEnabled, coverTitleInput, collegeInput, teacherInput, classNameInput, studentNameInput, studentIdInput].forEach((el) => { if (el) el.disabled = isSubmitting; });
     if (uploadZone) { if (isSubmitting) uploadZone.classList.remove("drag-over"); uploadZone.classList.toggle("is-busy", isSubmitting); }
     if (coverZone) { if (isSubmitting) coverZone.classList.remove("drag-over"); coverZone.classList.toggle("is-busy", isSubmitting); }
@@ -291,6 +334,20 @@
     ].forEach(([key, input]) => {
       const value = input && input.value ? input.value.trim() : "";
       if (value) formData.append(key, value);
+    });
+  }
+
+  function collectFormatOptions(target) {
+    const options = [
+      ["insert_toc", optionInsertToc],
+      ["resize_images", optionResizeImages],
+      ["format_footnotes", optionFormatFootnotes],
+    ];
+
+    options.forEach(([key, input]) => {
+      const enabled = !!(input && input.checked);
+      if (target instanceof FormData) target.append(key, enabled ? "1" : "0");
+      else if (target && typeof target === "object") target[key] = enabled;
     });
   }
 
@@ -454,11 +511,12 @@
   }
 
   // ====== 上传排版（自动判断是否合并） ======
-  async function uploadAndFormatLegacy() {
+  async function uploadAndFormatLegacy(reason = "server") {
     if (!selectedFile || isSubmitting) return;
     const controller = beginRequest();
     if (!controller) return;
     showProcessing(true);
+    setProcessingLive(getSyncFallbackMessage(reason));
 
     const formData = new FormData();
     let endpoint;
@@ -467,11 +525,13 @@
       // 有封面 → 调合并接口
       formData.append("cover", selectedCover);
       formData.append("body", selectedFile);
+      collectFormatOptions(formData);
       endpoint = "/api/format_merge";
     } else {
       // 无封面 → 普通排版
       formData.append("file", selectedFile);
       collectCoverMeta(formData);
+      collectFormatOptions(formData);
       endpoint = "/api/format";
     }
 
@@ -488,7 +548,9 @@
 
   async function uploadAndFormat() {
     if (!selectedFile || isSubmitting) return;
-    if (typeof EventSource === "undefined") return uploadAndFormatLegacy();
+    if (typeof EventSource === "undefined") return uploadAndFormatLegacy("browser");
+    const capabilities = await loadRuntimeCapabilities();
+    if (!(capabilities.asyncJobs && capabilities.sseProgress)) return uploadAndFormatLegacy("server");
 
     const controller = beginRequest();
     if (!controller) return;
@@ -500,10 +562,12 @@
     if (selectedCover) {
       formData.append("cover", selectedCover);
       formData.append("body", selectedFile);
+      collectFormatOptions(formData);
       endpoint = "/api/format_merge_async";
     } else {
       formData.append("file", selectedFile);
       collectCoverMeta(formData);
+      collectFormatOptions(formData);
       endpoint = "/api/format_async";
     }
 
@@ -524,15 +588,18 @@
   }
 
   // ====== 文字排版 ======
-  async function submitPastedTextLegacy() {
+  async function submitPastedTextLegacy(reason = "server") {
     const text = pasteArea.value.trim();
     if (!text) { showError("文本内容不能为空"); return; }
     if (isSubmitting) return;
     const controller = beginRequest();
     if (!controller) return;
     showProcessing(true);
+    setProcessingLive(getSyncFallbackMessage(reason));
+    const payload = { text };
+    collectFormatOptions(payload);
     try {
-      const res = await fetch("/api/format_text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }), signal: controller.signal });
+      const res = await fetch("/api/format_text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal: controller.signal });
       const data = await parseApiResponse(res, "排版失败");
       if (!res.ok || !data.success) { showError(data.error || "排版失败"); return; }
       completeSteps(); scheduleResult(data);
@@ -546,11 +613,15 @@
     const text = pasteArea.value.trim();
     if (!text) { showError("文本内容不能为空"); return; }
     if (isSubmitting) return;
-    if (typeof EventSource === "undefined") return submitPastedTextLegacy();
+    if (typeof EventSource === "undefined") return submitPastedTextLegacy("browser");
+    const capabilities = await loadRuntimeCapabilities();
+    if (!(capabilities.asyncJobs && capabilities.sseProgress)) return submitPastedTextLegacy("server");
 
     const controller = beginRequest();
     if (!controller) return;
     showProcessing();
+    const payload = { text };
+    collectFormatOptions(payload);
 
     let handedOff = false;
     try {
@@ -559,7 +630,7 @@
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify(payload),
           signal: controller.signal,
         },
         controller,
@@ -610,5 +681,6 @@
     }
   });
 
+  loadRuntimeCapabilities();
   syncBusyState(); updateRetryLabel(); updateFormatButton(); toggleCoverMetaPanel(); initParticles(); initSignatureTyping();
 })();

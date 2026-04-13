@@ -23,8 +23,16 @@ class AppRoutesTestCase(unittest.TestCase):
 
         self.original_upload_folder = app_module.UPLOAD_FOLDER
         self.original_output_folder = app_module.OUTPUT_FOLDER
+        self.original_runtime_environment = app_module.app.config.get("RUNTIME_ENVIRONMENT")
+        self.original_async_jobs_enabled = app_module.app.config.get("ASYNC_JOBS_ENABLED")
+        self.original_sse_progress_enabled = app_module.app.config.get("SSE_PROGRESS_ENABLED")
+        self.original_output_storage_mode = app_module.app.config.get("OUTPUT_STORAGE_MODE")
         app_module.UPLOAD_FOLDER = self.upload_dir
         app_module.OUTPUT_FOLDER = self.output_dir
+        app_module.app.config["RUNTIME_ENVIRONMENT"] = "test"
+        app_module.app.config["ASYNC_JOBS_ENABLED"] = True
+        app_module.app.config["SSE_PROGRESS_ENABLED"] = True
+        app_module.app.config["OUTPUT_STORAGE_MODE"] = "filesystem-temp"
         app_module.PROGRESS_JOBS.clear()
 
         self.client = app_module.app.test_client()
@@ -33,6 +41,10 @@ class AppRoutesTestCase(unittest.TestCase):
     def tearDown(self):
         app_module.UPLOAD_FOLDER = self.original_upload_folder
         app_module.OUTPUT_FOLDER = self.original_output_folder
+        app_module.app.config["RUNTIME_ENVIRONMENT"] = self.original_runtime_environment
+        app_module.app.config["ASYNC_JOBS_ENABLED"] = self.original_async_jobs_enabled
+        app_module.app.config["SSE_PROGRESS_ENABLED"] = self.original_sse_progress_enabled
+        app_module.app.config["OUTPUT_STORAGE_MODE"] = self.original_output_storage_mode
         app_module.PROGRESS_JOBS.clear()
         self.temp_dir.cleanup()
 
@@ -156,8 +168,12 @@ class AppRoutesTestCase(unittest.TestCase):
         data = response.get_json()
         self.assertTrue(data["success"])
         self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["runtime"]["environment"], "test")
+        self.assertEqual(data["runtime"]["output_storage"], "filesystem-temp")
         self.assertTrue(data["storage"]["upload_ready"])
         self.assertTrue(data["storage"]["output_ready"])
+        self.assertTrue(data["features"]["async_jobs"])
+        self.assertTrue(data["features"]["sse_progress"])
         self.assertEqual(response.headers.get("Cache-Control"), "no-store")
         self.assertEqual(response.headers.get("X-Content-Type-Options"), "nosniff")
 
@@ -210,10 +226,48 @@ class AppRoutesTestCase(unittest.TestCase):
         self.assertEqual(data["format_summary"]["page_setup"]["page_size"], "A4")
         self.assertEqual(data["format_summary"]["stats"]["heading_l3"], 1)
         self.assertEqual(data["format_summary"]["stats"]["reference_entry"], 1)
-        self.assertEqual(len(data["preview"]["highlights"]), 4)
+        self.assertEqual(len(data["preview"]["highlights"]), 5)
         self.assertTrue(any(item["level"] == "h3" for item in data["preview"]["outline"]))
         self.assertEqual(response.headers.get("Cache-Control"), "no-store")
         self.assertEqual(response.headers.get("X-Content-Type-Options"), "nosniff")
+
+    def test_format_text_accepts_custom_format_options(self):
+        response = self.client.post(
+            "/api/format_text",
+            json={
+                "text": (
+                    "基于多元回归模型的城市化研究\n"
+                    "摘要：这是摘要内容\n"
+                    "关键词：城市化 回归\n"
+                    "1 引言\n"
+                    "1.1 研究背景\n"
+                    "正文内容"
+                ),
+                "insert_toc": False,
+                "resize_images": False,
+                "format_footnotes": False,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertTrue(data["success"])
+        self.assertEqual(
+            data["format_summary"]["format_options"],
+            {
+                "insert_toc": False,
+                "resize_images": False,
+                "format_footnotes": False,
+            },
+        )
+        self.assertFalse(data["format_summary"]["table_of_contents_inserted"])
+        option_card = next(
+            item for item in data["preview"]["highlights"]
+            if item["eyebrow"] == "排版选项"
+        )
+        self.assertIn("自动目录已关闭", option_card["description"])
+        self.assertIn("图片自动缩放已关闭", option_card["description"])
+        self.assertIn("脚注统一整理已关闭", option_card["description"])
 
     def test_format_text_preview_preserves_section_heading_after_references(self):
         response = self.client.post(
@@ -295,6 +349,27 @@ class AppRoutesTestCase(unittest.TestCase):
         self.assertEqual(result_response.status_code, 200)
         self.assertTrue(result_data["success"])
         self.assertEqual(result_data["format_summary"]["stats"]["heading_l2"], 1)
+
+    def test_async_endpoints_return_503_when_disabled(self):
+        app_module.app.config["RUNTIME_ENVIRONMENT"] = "serverless"
+        app_module.app.config["ASYNC_JOBS_ENABLED"] = False
+        app_module.app.config["SSE_PROGRESS_ENABLED"] = False
+
+        response = self.client.post(
+            "/api/format_async",
+            data={"file": (BytesIO(self.test_doc_bytes), "test_input.docx")},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "success": False,
+                "error": "当前部署环境使用无状态实例，已自动禁用实时进度任务；请改用同步排版流程。",
+                "async_supported": False,
+            },
+        )
 
 
 if __name__ == "__main__":

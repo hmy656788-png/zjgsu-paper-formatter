@@ -15,19 +15,31 @@ from lxml import etree
 
 from format_paper import (
     apply_document_layout,
+    classify_paragraph,
     ensure_document_ends_with_page_break,
+    ensure_document_starts_with_page_break,
     find_title_paragraph_index,
     format_academic_paper,
     format_academic_paper_from_text,
     generate_cover_page,
+    merge_cover_and_body,
+    ParagraphType,
     split_text_to_paragraphs,
+    _find_field_paragraph_indices,
 )
+
+try:
+    from docxcompose.composer import Composer as _DocxComposer  # noqa: F401
+    HAS_DOCXCOMPOSE = True
+except ImportError:  # pragma: no cover - optional dependency fallback
+    HAS_DOCXCOMPOSE = False
 
 
 class FormatPaperFromTextTestCase(unittest.TestCase):
     CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
     PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
     FOOTNOTE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes"
+    WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
     @staticmethod
     def assert_run_uses_mixed_font_pair(test_case, run):
@@ -41,6 +53,11 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
         self.assertIsNotNone(num_pr)
         self.assertEqual(num_pr.find(qn("w:ilvl")).get(qn("w:val")), str(ilvl))
         return int(num_pr.find(qn("w:numId")).get(qn("w:val")))
+
+    def assert_paragraph_has_no_numbering(self, paragraph):
+        p_pr = paragraph._element.pPr
+        num_pr = None if p_pr is None else p_pr.find(qn("w:numPr"))
+        self.assertIsNone(num_pr)
 
     def assert_numbering_overrides(self, doc, num_id: int, expected_starts: dict[int, int]):
         numbering = doc.part.numbering_part.numbering_definitions._numbering
@@ -122,6 +139,43 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             "</w:p></w:footnote>"
             "</w:footnotes>"
         ).encode("utf-8")
+
+        with ZipFile(docx_path, "w") as target:
+            written = set()
+            for entry in entries:
+                target.writestr(entry, payloads[entry.filename])
+                written.add(entry.filename)
+            for name, data in payloads.items():
+                if name not in written:
+                    target.writestr(name, data)
+
+    def remove_style_definition(self, docx_path: Path, style_id: str):
+        with ZipFile(docx_path, "r") as source:
+            entries = source.infolist()
+            payloads = {entry.filename: source.read(entry.filename) for entry in entries}
+
+        styles_xml = payloads.get("word/styles.xml")
+        self.assertIsNotNone(styles_xml)
+
+        styles_root = etree.fromstring(styles_xml)
+        style_tag = f"{{{self.WORD_NS}}}style"
+        name_tag = f"{{{self.WORD_NS}}}name"
+        removed = False
+        for style in list(styles_root.findall(style_tag)):
+            current_style_id = style.get(qn("w:styleId"))
+            name_node = style.find(name_tag)
+            current_name = name_node.get(qn("w:val")) if name_node is not None else ""
+            if current_style_id == style_id or current_name == style_id:
+                styles_root.remove(style)
+                removed = True
+
+        self.assertTrue(removed)
+        payloads["word/styles.xml"] = etree.tostring(
+            styles_root,
+            encoding="UTF-8",
+            xml_declaration=True,
+            standalone=True,
+        )
 
         with ZipFile(docx_path, "w") as target:
             written = set()
@@ -290,9 +344,9 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertTrue(any(item["level"] == "references" for item in summary["outline"]))
 
             doc = Document(str(output_path))
-            heading_l1 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "引言")
-            heading_l2 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "研究背景")
-            heading_l3 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "研究假设")
+            heading_l1 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "1 引言")
+            heading_l2 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "1.1 研究背景")
+            heading_l3 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "1.1.1 研究假设")
             references_heading = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "参考文献：")
             reference_entry = next(paragraph for paragraph in doc.paragraphs if paragraph.text.startswith("[1] 张三."))
             toc_heading = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "目录")
@@ -305,18 +359,14 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
                 if 'w:type="page"' in paragraph._element.xml
             )
 
-            heading_l1_num_id = self.assert_paragraph_has_numbering(heading_l1, 0)
-            heading_l2_num_id = self.assert_paragraph_has_numbering(heading_l2, 1)
-            heading_l3_num_id = self.assert_paragraph_has_numbering(heading_l3, 2)
-
             self.assertEqual(heading_l3.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
             self.assertTrue(heading_l3.runs[0].font.bold)
             self.assertEqual(heading_l3.runs[0].font.size.pt, 12.0)
             self.assertEqual(heading_l3.paragraph_format.first_line_indent.pt, 0.0)
             self.assertEqual(heading_l3._element.pPr.find(qn("w:outlineLvl")).get(qn("w:val")), "2")
-            self.assert_numbering_overrides(doc, heading_l1_num_id, {0: 1})
-            self.assert_numbering_overrides(doc, heading_l2_num_id, {0: 1, 1: 1})
-            self.assert_numbering_overrides(doc, heading_l3_num_id, {0: 1, 1: 1, 2: 1})
+            self.assert_paragraph_has_no_numbering(heading_l1)
+            self.assert_paragraph_has_no_numbering(heading_l2)
+            self.assert_paragraph_has_no_numbering(heading_l3)
 
             self.assertEqual(references_heading.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
             self.assertEqual(references_heading.text, "参考文献：")
@@ -421,7 +471,7 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertTrue(abstract_heading.runs[0].font.bold)
             self.assertEqual(abstract_heading.runs[0].font.size.pt, 12.0)
 
-            self.assertEqual(abstract_body.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+            self.assertEqual(abstract_body.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
             self.assertEqual(abstract_body.paragraph_format.first_line_indent.pt, 0.0)
             self.assertEqual(abstract_body.runs[0].font.size.pt, 12.0)
             self.assertEqual(abstract_body._element.pPr.find(qn("w:widowControl")).get(qn("w:val")), "true")
@@ -454,17 +504,13 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertIsInstance(summary, dict)
 
             doc = Document(str(output_path))
-            heading_l1 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "研究设计")
-            heading_l2 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "数据来源")
-            heading_l3 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "稳健性检验")
+            heading_l1 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "3 研究设计")
+            heading_l2 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "3.2 数据来源")
+            heading_l3 = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "3.2.4 稳健性检验")
 
-            heading_l1_num_id = self.assert_paragraph_has_numbering(heading_l1, 0)
-            heading_l2_num_id = self.assert_paragraph_has_numbering(heading_l2, 1)
-            heading_l3_num_id = self.assert_paragraph_has_numbering(heading_l3, 2)
-
-            self.assert_numbering_overrides(doc, heading_l1_num_id, {0: 3})
-            self.assert_numbering_overrides(doc, heading_l2_num_id, {0: 3, 1: 2})
-            self.assert_numbering_overrides(doc, heading_l3_num_id, {0: 3, 1: 2, 2: 4})
+            self.assert_paragraph_has_no_numbering(heading_l1)
+            self.assert_paragraph_has_no_numbering(heading_l2)
+            self.assert_paragraph_has_no_numbering(heading_l3)
         finally:
             output_path.unlink(missing_ok=True)
 
@@ -675,7 +721,7 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             output_doc = Document(str(output_path))
             self.assertEqual(len(output_doc.inline_shapes), 2)
 
-            self.assertEqual(output_doc.paragraphs[3].text, "引言")
+            self.assertEqual(output_doc.paragraphs[3].text, "1 引言")
             self.assertEqual(output_doc.paragraphs[7].text, "图 1 系统架构图")
             self.assertEqual(output_doc.paragraphs[9].text, "图 2 模型流程图")
             self.assertEqual(output_doc.paragraphs[10].text, "表 1 样本描述统计")
@@ -683,7 +729,7 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
             self.assertEqual(output_doc.paragraphs[12].text, "来源：Python 爬取与企业年报整理。")
             self.assertEqual(output_doc.paragraphs[5].style.name, "List Bullet")
             self.assertEqual(output_doc.paragraphs[6].paragraph_format.first_line_indent.pt, 0.0)
-            self.assert_paragraph_has_numbering(output_doc.paragraphs[3], 0)
+            self.assert_paragraph_has_no_numbering(output_doc.paragraphs[3])
             self.assertEqual(output_doc.paragraphs[3]._element.pPr.find(qn("w:keepNext")).get(qn("w:val")), "true")
             self.assertEqual(output_doc.paragraphs[3]._element.pPr.find(qn("w:keepLines")).get(qn("w:val")), "true")
             self.assertEqual(output_doc.paragraphs[6]._element.pPr.find(qn("w:keepNext")).get(qn("w:val")), "true")
@@ -885,6 +931,511 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
 
         self.assertTrue(doc.paragraphs)
         self.assertIn('w:type="page"', doc.paragraphs[-1]._element.xml)
+
+    def test_ensure_document_starts_with_page_break_prepends_break(self):
+        doc = Document()
+        doc.add_paragraph("正文标题")
+
+        ensure_document_starts_with_page_break(doc)
+
+        self.assertTrue(doc.paragraphs)
+        self.assertIn('w:type="page"', doc.paragraphs[0]._element.xml)
+        self.assertEqual(doc.paragraphs[1].text, "正文标题")
+
+    @unittest.skipUnless(HAS_DOCXCOMPOSE, "docxcompose 未安装，跳过封面合并测试")
+    def test_merge_cover_and_body_preserves_cover_content(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            cover_path = temp_path / "cover.docx"
+            body_path = temp_path / "body.docx"
+            output_path = temp_path / "merged.docx"
+
+            cover_doc = Document()
+            cover_title = cover_doc.add_paragraph("浙江工商大学课程论文")
+            cover_title.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            cover_title.add_run("封面副标题").bold = True
+            cover_doc.add_paragraph("学生姓名：张三")
+            cover_doc.save(str(cover_path))
+
+            body_doc = Document()
+            body_doc.add_paragraph("平台治理视角下数字化协同研究")
+            body_doc.add_paragraph("摘要：这是摘要内容。")
+            body_doc.add_paragraph("关键词：平台治理 协同")
+            body_doc.add_paragraph("1 引言")
+            body_doc.add_paragraph("这是正文第一页。")
+            body_doc.save(str(body_path))
+
+            summary = merge_cover_and_body(str(cover_path), str(body_path), str(output_path))
+
+            self.assertIsInstance(summary, dict)
+
+            merged_doc = Document(str(output_path))
+            self.assertEqual(merged_doc.paragraphs[0].text, "浙江工商大学课程论文封面副标题")
+            self.assertEqual(merged_doc.paragraphs[1].text, "学生姓名：张三")
+            self.assertNotIn('w:type="page"', merged_doc.paragraphs[0]._element.xml)
+            self.assertNotIn('w:type="page"', merged_doc.paragraphs[1]._element.xml)
+            self.assertIn('w:type="page"', merged_doc.paragraphs[2]._element.xml)
+            self.assertEqual(merged_doc.paragraphs[3].text, "平台治理视角下数字化协同研究")
+            self.assertEqual(merged_doc.paragraphs[0].paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+            self.assertTrue(merged_doc.paragraphs[0].runs[-1].bold)
+
+            original_cover_doc = Document(str(cover_path))
+            self.assertEqual(original_cover_doc.paragraphs[0].text, "浙江工商大学课程论文封面副标题")
+            self.assertEqual(original_cover_doc.paragraphs[1].text, "学生姓名：张三")
+            self.assertEqual(len(original_cover_doc.paragraphs), 2)
+
+
+    # ------------------------------------------------------------------
+    # 标题正则扩展测试
+    # ------------------------------------------------------------------
+
+    def test_classify_heading_with_special_characters(self):
+        """标题中包含引号、书名号、百分号等特殊字符应正确识别。"""
+        cases = [
+            ("1 基于\u201c双碳\u201d目标的分析", ParagraphType.HEADING_L1),
+            ("2 《国富论》的核心观点", ParagraphType.HEADING_L1),
+            ("3 GDP增长率达到8.5%的原因", ParagraphType.HEADING_L1),
+            ("1.1 \u201c互联网+\u201d背景下的研究", ParagraphType.HEADING_L2),
+            ("2.3 基于Black\u2013Scholes模型", ParagraphType.HEADING_L2),
+            ("1.1.1 \u201c双碳\u201d与ESG", ParagraphType.HEADING_L3),
+            ("2.1.1 变量\u00b7指标选取", ParagraphType.HEADING_L3),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(classify_paragraph(text), expected)
+
+    def test_classify_heading_l1_without_space_after_period(self):
+        """\"1.引言\" 形式（句点后无空格）应识别为一级标题。"""
+        self.assertEqual(classify_paragraph("1.引言"), ParagraphType.HEADING_L1)
+        self.assertEqual(classify_paragraph("2.研究设计"), ParagraphType.HEADING_L1)
+        # "1引言"（无任何分隔）应保持为正文，避免误判"1年"之类
+        self.assertEqual(classify_paragraph("1引言"), ParagraphType.BODY)
+
+    def test_classify_rejects_date_and_counter_patterns_as_headings(self):
+        """正文中 \"数字 空格 X 空格 数字\" 的日期/计数表达不应被识别为标题。"""
+        cases = [
+            "1 月 1 日开始实验",
+            "1 第 2 章开始",
+            "2024 年 3 月的数据",
+            "2 第 3 条规定",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertEqual(classify_paragraph(text), ParagraphType.BODY)
+
+    def test_classify_toc_entries_as_body(self):
+        """手动输入的目录条目（含点引导+页码）不应被识别为标题或图表标题。"""
+        cases = [
+            "1 引言........3",
+            "1.1 研究背景......5",
+            "2 研究设计............7",
+            "图 1 数据分布图............3",
+            "表 2 变量定义……5",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertEqual(classify_paragraph(text), ParagraphType.BODY)
+
+    def test_caption_parses_chapter_prefixed_index(self):
+        """章节前缀的图表编号（如 图1-1、表2.3）应被完整识别为 index。"""
+        from format_paper import match_caption_in_normalized_text, rebuild_caption_text
+
+        cases = [
+            ("图 1-1 变量分布", "1-1", "变量分布"),
+            ("图1-1 变量分布", "1-1", "变量分布"),
+            ("图 1.1 变量分布", "1.1", "变量分布"),
+            ("表 2-3 数据统计", "2-3", "数据统计"),
+            ("图 1.1.1 xxx", "1.1.1", "xxx"),
+        ]
+        for text, expected_index, expected_caption in cases:
+            with self.subTest(text=text):
+                result = match_caption_in_normalized_text(text)
+                self.assertIsNotNone(result)
+                _, match, _ = result
+                self.assertEqual(match.group("index"), expected_index)
+                self.assertEqual(match.group("caption"), expected_caption)
+                # 重建标题时应使用自动编号，不应把旧 index 残留在 caption 中
+                rebuilt = rebuild_caption_text(result[0], 5, match)
+                self.assertNotIn("1-1", rebuilt)
+                self.assertNotIn("2-3", rebuilt)
+
+    def test_classify_section_heading_variants(self):
+        """\"致谢\"、\"附录\" 等章节标题应容忍内部空格与附加编号。"""
+        cases = [
+            "致谢", "致 谢", "致  谢",
+            "附录", "附 录", "附录A", "附录 A", "附录一",
+            "作者简介", "作 者 简 介",
+            "基金项目",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertEqual(classify_paragraph(text), ParagraphType.SECTION_HEADING)
+
+    # ------------------------------------------------------------------
+    # 域段落（图目录/表目录/TOC）跳过测试
+    # ------------------------------------------------------------------
+
+    def test_find_field_paragraph_indices_detects_toc_style(self):
+        """带 TOC 样式的段落应被识别为域段落。"""
+        from docx.oxml import OxmlElement
+
+        doc = Document()
+        doc.add_paragraph("正文段落")
+        p_toc = doc.add_paragraph("1 引言……3")
+        # 模拟 TOC 样式：直接设置样式名
+        p_toc.style = doc.styles.add_style("TOC 1", 1)  # 1 = WD_STYLE_TYPE.PARAGRAPH
+
+        paragraphs = list(doc.paragraphs)
+        indices = _find_field_paragraph_indices(paragraphs)
+
+        self.assertNotIn(0, indices)
+        self.assertIn(1, indices)
+
+    def test_find_field_paragraph_indices_detects_field_block(self):
+        """被 fldChar begin/end 包裹的段落应被识别为域段落。"""
+        from docx.oxml import OxmlElement
+
+        doc = Document()
+        doc.add_paragraph("正文")
+
+        # 创建含有 fldChar begin 的段落
+        p_field_start = doc.add_paragraph()
+        run_begin = p_field_start.add_run()
+        fld_begin = OxmlElement("w:fldChar")
+        fld_begin.set(qn("w:fldCharType"), "begin")
+        run_begin._element.append(fld_begin)
+        run_instr = p_field_start.add_run()
+        instr = OxmlElement("w:instrText")
+        instr.text = 'TOC \\o "1-3"'
+        run_instr._element.append(instr)
+        run_sep = p_field_start.add_run()
+        fld_sep = OxmlElement("w:fldChar")
+        fld_sep.set(qn("w:fldCharType"), "separate")
+        run_sep._element.append(fld_sep)
+
+        # 域内容段落（模拟目录条目）
+        doc.add_paragraph("图 1 某某图……5")
+
+        # 域结束段落
+        p_field_end = doc.add_paragraph()
+        run_end = p_field_end.add_run()
+        fld_end = OxmlElement("w:fldChar")
+        fld_end.set(qn("w:fldCharType"), "end")
+        run_end._element.append(fld_end)
+
+        paragraphs = list(doc.paragraphs)
+        indices = _find_field_paragraph_indices(paragraphs)
+
+        # 域开始段落（含 begin 和 separate）不算域内容，但域中间的内容段落应被标记
+        self.assertNotIn(0, indices)  # 正文段落
+        # p_field_start 包含 begin，之后 field_depth > 0，所以它自身也在域内
+        self.assertIn(1, indices)
+        self.assertIn(2, indices)  # 域内容段落
+
+    def test_format_academic_paper_skips_toc_style_paragraphs(self):
+        """带 TOC 样式的段落不应被当作图表标题重新格式化。"""
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        doc.add_paragraph("摘要：这是摘要")
+        doc.add_paragraph("关键词：测试")
+        doc.add_paragraph("1 引言")
+        doc.add_paragraph("正文段落")
+
+        # 添加一个模拟图目录条目
+        toc_entry = doc.add_paragraph("图 1 数据分布图")
+        toc_entry.style = doc.styles.add_style("Table of Figures", 1)
+
+        doc.add_paragraph("图 1 数据分布图")  # 真正的图表标题
+
+        with tempfile.NamedTemporaryFile(suffix=".docx") as f:
+            doc.save(f.name)
+            summary = format_academic_paper(f.name, f.name)
+
+        # 只应识别到 1 个图标题（真正的），而非 2 个
+        self.assertEqual(summary["stats"]["figure_caption"], 1)
+
+    def test_format_academic_paper_skips_toc_hyperlink_entries(self):
+        """指向 _Toc 书签的自动目录条目不应被当作真实图标题。"""
+        from docx.oxml import OxmlElement
+
+        doc = Document()
+        doc.add_paragraph("论文标题")
+        doc.add_paragraph("摘要：这是摘要")
+        doc.add_paragraph("关键词：测试")
+        doc.add_paragraph("1 引言")
+        doc.add_paragraph("正文段落")
+
+        toc_entry = doc.add_paragraph()
+        hyperlink = OxmlElement("w:hyperlink")
+        hyperlink.set(qn("w:anchor"), "_Toc123456789")
+        run = OxmlElement("w:r")
+        text = OxmlElement("w:t")
+        text.text = "图 1 数据分布图……5"
+        run.append(text)
+        hyperlink.append(run)
+        toc_entry._p.append(hyperlink)
+
+        doc.add_paragraph("图 1 数据分布图")
+
+        with tempfile.NamedTemporaryFile(suffix=".docx") as f:
+            doc.save(f.name)
+            summary = format_academic_paper(f.name, f.name)
+
+        self.assertEqual(summary["stats"]["figure_caption"], 1)
+
+    def test_format_academic_paper_handles_documents_without_normal_style(self):
+        """缺少 Normal 样式的模板文档也应能完成排版。"""
+        doc = Document()
+        doc.add_paragraph("A Strategic Analysis of Luckin Coffee")
+        doc.add_paragraph("Abstract")
+        doc.add_paragraph("Keywords: coffee strategy")
+        doc.add_paragraph("1. Introduction")
+        doc.add_paragraph("正文内容")
+
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            input_path = Path(handle.name)
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            output_path = Path(handle.name)
+
+        try:
+            doc.save(input_path)
+            self.remove_style_definition(input_path, "Normal")
+
+            summary = format_academic_paper(str(input_path), str(output_path))
+
+            self.assertIsInstance(summary, dict)
+            self.assertTrue(output_path.exists())
+            self.assertEqual(summary["page_setup"]["page_size"], "A4")
+        finally:
+            input_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+
+    def test_format_academic_paper_infers_styled_english_step_heading(self):
+        """英文 Heading 2 中包含内部数字时，仍应按标题而非正文处理。"""
+        doc = Document()
+        doc.add_paragraph("Test Report")
+        doc.add_paragraph("Abstract")
+        heading = doc.add_paragraph("3.1 Step 1: Mission")
+        heading.style = "Heading 2"
+        doc.add_paragraph("The mission statement is the conceptual point of departure.")
+
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            input_path = Path(handle.name)
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            output_path = Path(handle.name)
+
+        try:
+            doc.save(input_path)
+            summary = format_academic_paper(str(input_path), str(output_path))
+
+            self.assertEqual(summary["stats"]["heading_l2"], 1)
+
+            output_doc = Document(str(output_path))
+            heading_paragraph = next(paragraph for paragraph in output_doc.paragraphs if paragraph.text == "Step 1: Mission")
+            self.assertEqual(heading_paragraph.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
+            self.assertEqual(heading_paragraph.paragraph_format.first_line_indent.pt, 0.0)
+        finally:
+            input_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+
+    def test_format_academic_paper_left_aligns_english_body_and_h1(self):
+        """纯英文正文与一级标题应避免两端拉伸和居中错位。"""
+        doc = Document()
+        heading = doc.add_paragraph("3. Phase One: Goal Setting")
+        heading.style = "Heading 1"
+        body = doc.add_paragraph("The mission statement is the conceptual point of departure for any strategic plan.")
+
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            input_path = Path(handle.name)
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            output_path = Path(handle.name)
+
+        try:
+            doc.save(input_path)
+            summary = format_academic_paper(str(input_path), str(output_path))
+
+            self.assertEqual(summary["stats"]["heading_l1"], 1)
+
+            output_doc = Document(str(output_path))
+            heading_paragraph = next(paragraph for paragraph in output_doc.paragraphs if paragraph.text == "Phase One: Goal Setting")
+            body_paragraph = next(paragraph for paragraph in output_doc.paragraphs if paragraph.text.startswith("The mission statement"))
+
+            self.assertEqual(heading_paragraph.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
+            self.assertEqual(body_paragraph.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
+            self.assertEqual(body_paragraph.paragraph_format.first_line_indent.pt, 24.0)
+        finally:
+            input_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+
+    def test_format_academic_paper_formats_long_english_table_caption_and_references(self):
+        """较长的英文表题与英文参考文献段落都应按对应版式格式化。"""
+        doc = Document()
+        doc.add_paragraph("Abstract")
+        doc.add_paragraph("Abstract: This report evaluates Luckin Coffee's strategic development.")
+        doc.add_paragraph("Keywords: coffee strategy")
+        doc.add_paragraph("Table 1. Luckin Coffee Selected Performance Indicators, 2019–2024")
+        doc.add_paragraph("Source: Luckin Coffee SEC filings (Forms 6-K and annual reports), 2019–2024.")
+        doc.add_paragraph("References")
+        doc.add_paragraph("Drucker, P. F. (1973). Management: Tasks, responsibilities, practices. Harper & Row.")
+
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            input_path = Path(handle.name)
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            output_path = Path(handle.name)
+
+        try:
+            doc.save(input_path)
+            summary = format_academic_paper(str(input_path), str(output_path))
+
+            self.assertEqual(summary["stats"]["table_caption"], 1)
+            self.assertEqual(summary["stats"]["caption_note"], 1)
+            self.assertEqual(summary["stats"]["references_heading"], 1)
+            self.assertEqual(summary["stats"]["reference_entry"], 1)
+
+            output_doc = Document(str(output_path))
+            caption_paragraph = next(
+                paragraph
+                for paragraph in output_doc.paragraphs
+                if paragraph.text.startswith("Table 1 ")
+            )
+            source_paragraph = next(
+                paragraph
+                for paragraph in output_doc.paragraphs
+                if paragraph.text.startswith("Source:")
+            )
+            references_heading = next(
+                paragraph
+                for paragraph in output_doc.paragraphs
+                if paragraph.text == "References"
+            )
+            reference_entry = next(
+                paragraph
+                for paragraph in output_doc.paragraphs
+                if paragraph.text.startswith("Drucker, P. F. (1973).")
+            )
+
+            self.assertEqual(caption_paragraph.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+            self.assertAlmostEqual(caption_paragraph.runs[0].font.size.pt, 10.5, places=1)
+            self.assertEqual(source_paragraph.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
+            self.assertAlmostEqual(source_paragraph.runs[0].font.size.pt, 10.5, places=1)
+            self.assertTrue(source_paragraph.runs[0].bold)
+            self.assertEqual(references_heading.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+            self.assertEqual(reference_entry.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
+            self.assertAlmostEqual(reference_entry.paragraph_format.first_line_indent.pt, 21.0, places=1)
+        finally:
+            input_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+
+    def test_format_academic_paper_matches_english_template_layout(self):
+        """英文整篇模板应保留封面区、编号标题、拆行表题与参考文献的样式。"""
+        doc = Document()
+        for text in [
+            "A Strategic Analysis of Luckin Coffee Through the",
+            "Marketing Planning Framework:",
+            "From Accounting Scandal to Market Leadership",
+        ]:
+            paragraph = doc.add_paragraph(text)
+            paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        doc.add_paragraph("")
+        author = doc.add_paragraph("He Minyang")
+        author.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        abstract_heading = doc.add_paragraph("Abstract")
+        abstract_heading.style = "Heading 1"
+        doc.add_paragraph("This report applies McDonald's marketing planning framework to analyse Luckin Coffee.")
+        doc.add_paragraph("Keywords: Luckin Coffee, marketing planning framework, competitive strategy")
+
+        intro = doc.add_paragraph("1. Introduction")
+        intro.style = "Heading 1"
+        doc.add_paragraph("The Chinese freshly brewed coffee market has undergone a structural transformation.")
+        doc.add_paragraph("Table 1")
+        doc.add_paragraph("Luckin Coffee Selected Performance Indicators, 2019–2024")
+        doc.add_paragraph("Note. Luckin Coffee SEC filings (Forms 6-K and annual reports), 2019–2024.")
+
+        step = doc.add_paragraph("2.1 Step 1: Mission")
+        step.style = "Heading 2"
+        substep = doc.add_paragraph("2.1.1 PESTLE Analysis")
+        substep.style = "Heading 3"
+
+        references = doc.add_paragraph("References")
+        references.style = "Heading 1"
+        doc.add_paragraph("Aaker, D. A. (1996). Building strong brands. Free Press.")
+
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            input_path = Path(handle.name)
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            output_path = Path(handle.name)
+
+        try:
+            doc.save(input_path)
+            summary = format_academic_paper(str(input_path), str(output_path))
+
+            self.assertEqual(summary["stats"]["table_caption"], 1)
+            self.assertEqual(summary["stats"]["caption_note"], 1)
+            self.assertEqual(summary["stats"]["references_heading"], 1)
+            self.assertEqual(summary["stats"]["reference_entry"], 1)
+
+            output_doc = Document(str(output_path))
+            title_line = next(
+                paragraph
+                for paragraph in output_doc.paragraphs
+                if paragraph.text == "A Strategic Analysis of Luckin Coffee Through the"
+            )
+            author_line = next(
+                paragraph
+                for paragraph in output_doc.paragraphs
+                if paragraph.text == "He Minyang"
+            )
+            abstract_heading = next(paragraph for paragraph in output_doc.paragraphs if paragraph.text == "Abstract")
+            keywords = next(paragraph for paragraph in output_doc.paragraphs if paragraph.text.startswith("Keywords:"))
+            intro = next(paragraph for paragraph in output_doc.paragraphs if paragraph.text == "1. Introduction")
+            table_label = next(paragraph for paragraph in output_doc.paragraphs if paragraph.text == "Table 1")
+            table_title = next(
+                paragraph for paragraph in output_doc.paragraphs
+                if paragraph.text == "Luckin Coffee Selected Performance Indicators, 2019–2024"
+            )
+            note = next(paragraph for paragraph in output_doc.paragraphs if paragraph.text.startswith("Note."))
+            step = next(paragraph for paragraph in output_doc.paragraphs if paragraph.text == "2.1 Step 1: Mission")
+            substep = next(paragraph for paragraph in output_doc.paragraphs if paragraph.text == "2.1.1 PESTLE Analysis")
+            references_heading = next(paragraph for paragraph in output_doc.paragraphs if paragraph.text == "References")
+            reference_entry = next(
+                paragraph for paragraph in output_doc.paragraphs
+                if paragraph.text.startswith("Aaker, D. A. (1996).")
+            )
+
+            self.assertEqual(title_line.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+            self.assertTrue(title_line.runs[0].bold)
+            self.assertEqual(author_line.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+            self.assertFalse(author_line.runs[0].bold)
+
+            self.assertEqual(abstract_heading.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+            self.assertAlmostEqual(abstract_heading.runs[0].font.size.pt, 14.0, places=1)
+            self.assertAlmostEqual(keywords.paragraph_format.first_line_indent.pt, 36.0, places=1)
+            self.assertFalse(keywords.runs[0].bold)
+
+            self.assertEqual(intro.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+            self.assertEqual(intro.text, "1. Introduction")
+            self.assertAlmostEqual(intro.runs[0].font.size.pt, 14.0, places=1)
+            self.assertEqual(step.text, "2.1 Step 1: Mission")
+            self.assertAlmostEqual(step.runs[0].font.size.pt, 13.0, places=1)
+            self.assertEqual(substep.text, "2.1.1 PESTLE Analysis")
+
+            self.assertEqual(table_label.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
+            self.assertTrue(table_label.runs[0].bold)
+            self.assertAlmostEqual(table_label.runs[0].font.size.pt, 12.0, places=1)
+            self.assertEqual(table_title.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
+            self.assertFalse(table_title.runs[0].bold)
+            self.assertAlmostEqual(note.runs[0].font.size.pt, 10.0, places=1)
+            self.assertFalse(note.runs[0].bold)
+
+            self.assertEqual(references_heading.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+            self.assertAlmostEqual(references_heading.runs[0].font.size.pt, 14.0, places=1)
+            self.assertAlmostEqual(reference_entry.paragraph_format.first_line_indent.pt, -36.0, places=1)
+            self.assertAlmostEqual(reference_entry.paragraph_format.left_indent.pt, 36.0, places=1)
+            self.assertAlmostEqual(reference_entry.runs[0].font.size.pt, 11.0, places=1)
+        finally:
+            input_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

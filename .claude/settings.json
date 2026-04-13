@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -m unittest tests.test_format_paper)",
+      "Bash(.venv/bin/python -c ':*)"
+    ]
+  }
+}

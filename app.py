@@ -7,6 +7,7 @@
 
 import re
 import json
+import os
 import uuid
 import time
 import threading
@@ -19,6 +20,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from format_paper import (
+    DEFAULT_FORMAT_OPTIONS,
     ParagraphType,
     format_academic_paper,
     format_academic_paper_from_text,
@@ -72,6 +74,12 @@ COVER_FORM_FIELDS = (
     "student_id",
     "school_name",
 )
+SERVERLESS_RUNTIME_ENV_VARS = (
+    "VERCEL",
+    "AWS_LAMBDA_FUNCTION_NAME",
+    "FUNCTIONS_WORKER_RUNTIME",
+    "K_SERVICE",
+)
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -80,6 +88,47 @@ PROGRESS_JOBS_LOCK = threading.Lock()
 
 if CORS is None:
     logger.warning("未检测到 Flask-Cors，已跳过 CORS 配置；同源部署不受影响。")
+
+
+def parse_bool_env(value) -> bool | None:
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return value
+
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+
+    return None
+
+
+def detect_runtime_environment() -> str:
+    for env_var in SERVERLESS_RUNTIME_ENV_VARS:
+        if os.getenv(env_var):
+            return "serverless"
+
+    return "long-lived"
+
+
+def resolve_async_jobs_enabled(runtime_environment: str) -> bool:
+    override = parse_bool_env(os.getenv("ENABLE_ASYNC_JOBS"))
+    if override is not None:
+        return override
+
+    return runtime_environment == "long-lived"
+
+
+app.config["RUNTIME_ENVIRONMENT"] = detect_runtime_environment()
+app.config["ASYNC_JOBS_ENABLED"] = resolve_async_jobs_enabled(app.config["RUNTIME_ENVIRONMENT"])
+app.config["SSE_PROGRESS_ENABLED"] = app.config["ASYNC_JOBS_ENABLED"]
+app.config["OUTPUT_STORAGE_MODE"] = "filesystem-temp"
+
+if not app.config["ASYNC_JOBS_ENABLED"]:
+    logger.info("当前运行环境已禁用异步任务与 SSE 进度流，前端将自动回退到同步排版流程。")
 
 
 class JobProcessingError(Exception):
@@ -103,11 +152,39 @@ def json_error(message: str, status_code: int):
     return jsonify({"success": False, "error": message}), status_code
 
 
+def async_jobs_enabled() -> bool:
+    return bool(app.config.get("ASYNC_JOBS_ENABLED", False))
+
+
+def build_async_unavailable_message() -> str:
+    if app.config.get("RUNTIME_ENVIRONMENT") == "serverless":
+        return "当前部署环境使用无状态实例，已自动禁用实时进度任务；请改用同步排版流程。"
+
+    return "当前服务未启用实时进度任务，请改用同步排版流程。"
+
+
+def json_async_unavailable():
+    return (
+        jsonify(
+            {
+                "success": False,
+                "error": build_async_unavailable_message(),
+                "async_supported": False,
+            }
+        ),
+        503,
+    )
+
+
 def get_health_payload() -> dict:
     return {
         "success": True,
         "status": "ok",
         "timestamp": int(time.time()),
+        "runtime": {
+            "environment": app.config.get("RUNTIME_ENVIRONMENT", "unknown"),
+            "output_storage": app.config.get("OUTPUT_STORAGE_MODE", "unknown"),
+        },
         "storage": {
             "upload_dir": str(UPLOAD_FOLDER),
             "output_dir": str(OUTPUT_FOLDER),
@@ -116,6 +193,8 @@ def get_health_payload() -> dict:
         },
         "features": {
             "cover_merge": HAS_DOCXCOMPOSE,
+            "async_jobs": async_jobs_enabled(),
+            "sse_progress": bool(app.config.get("SSE_PROGRESS_ENABLED", False)),
         },
     }
 
@@ -188,6 +267,20 @@ def extract_cover_info(payload) -> dict | None:
     return cover_info
 
 
+def extract_format_options(payload) -> dict:
+    """提取排版选项，默认保持现有自动处理行为。"""
+    options = DEFAULT_FORMAT_OPTIONS.copy()
+    if not payload:
+        return options
+
+    for field in DEFAULT_FORMAT_OPTIONS:
+        parsed = parse_bool_env(payload.get(field))
+        if parsed is not None:
+            options[field] = parsed
+
+    return options
+
+
 def normalize_format_summary(result) -> dict:
     """兼容旧布尔返回值，统一整理为结构化摘要。"""
     if isinstance(result, dict):
@@ -201,6 +294,8 @@ def normalize_format_summary(result) -> dict:
             "formatted_footnotes": result.get("formatted_footnotes", 0),
             "resized_images": result.get("resized_images", 0),
             "cover_generated": result.get("cover_generated", False),
+            "table_of_contents_inserted": result.get("table_of_contents_inserted", False),
+            "format_options": result.get("format_options", DEFAULT_FORMAT_OPTIONS.copy()),
         }
 
     return {
@@ -213,6 +308,8 @@ def normalize_format_summary(result) -> dict:
         "formatted_footnotes": 0,
         "resized_images": 0,
         "cover_generated": False,
+        "table_of_contents_inserted": False,
+        "format_options": DEFAULT_FORMAT_OPTIONS.copy(),
     }
 
 
@@ -237,6 +334,9 @@ def build_preview(summary: dict) -> dict:
     cover_generated = bool(summary.get("cover_generated"))
     equation_paragraphs = int(summary.get("equation_paragraphs", 0) or 0)
     formatted_footnotes = int(summary.get("formatted_footnotes", 0) or 0)
+    resized_images = int(summary.get("resized_images", 0) or 0)
+    toc_inserted = bool(summary.get("table_of_contents_inserted"))
+    format_options = summary.get("format_options") or DEFAULT_FORMAT_OPTIONS.copy()
 
     top_margin = page_setup.get("margins_cm", {}).get("top", 2.54)
     left_margin = page_setup.get("margins_cm", {}).get("left", 3.18)
@@ -279,6 +379,29 @@ def build_preview(summary: dict) -> dict:
     else:
         reference_description = "暂未识别到“参考文献”标题，本次仍已完成正文和标题层级排版"
 
+    option_descriptions = []
+    option_descriptions.append(
+        "自动目录已插入"
+        if format_options.get("insert_toc") and toc_inserted
+        else "自动目录已开启，但本次未插入"
+        if format_options.get("insert_toc")
+        else "自动目录已关闭"
+    )
+    option_descriptions.append(
+        f"图片宽度已自动检查，并缩放 {resized_images} 张"
+        if format_options.get("resize_images") and resized_images
+        else "图片宽度已自动检查"
+        if format_options.get("resize_images")
+        else "图片自动缩放已关闭"
+    )
+    option_descriptions.append(
+        f"脚注已统一整理 {formatted_footnotes} 条"
+        if format_options.get("format_footnotes") and formatted_footnotes
+        else "脚注统一整理已启用"
+        if format_options.get("format_footnotes")
+        else "脚注统一整理已关闭"
+    )
+
     return {
         "highlights": [
             {
@@ -300,6 +423,11 @@ def build_preview(summary: dict) -> dict:
                 "eyebrow": "参考文献",
                 "title": "尾部参考文献已单独整理",
                 "description": reference_description,
+            },
+            {
+                "eyebrow": "排版选项",
+                "title": "本次自动处理已按你的偏好执行",
+                "description": "；".join(option_descriptions),
             },
         ],
         "outline": outline,
@@ -474,7 +602,14 @@ def build_success_response(
     return response_data
 
 
-def process_uploaded_document(input_path: Path, original_name: str, job_id: str, progress_callback=None, cover_info=None) -> dict:
+def process_uploaded_document(
+    input_path: Path,
+    original_name: str,
+    job_id: str,
+    progress_callback=None,
+    cover_info=None,
+    format_options=None,
+) -> dict:
     output_filename = f"{job_id}_output.docx"
     output_path = OUTPUT_FOLDER / output_filename
 
@@ -486,6 +621,7 @@ def process_uploaded_document(input_path: Path, original_name: str, job_id: str,
             str(output_path),
             progress_callback=progress_callback,
             cover_info=cover_info,
+            format_options=format_options,
         )
         elapsed = time.time() - start_time
 
@@ -509,7 +645,7 @@ def process_uploaded_document(input_path: Path, original_name: str, job_id: str,
         raise JobProcessingError(f"上传文件不存在：{exc}", 500) from exc
 
 
-def process_text_document(text: str, job_id: str, progress_callback=None, cover_info=None) -> dict:
+def process_text_document(text: str, job_id: str, progress_callback=None, cover_info=None, format_options=None) -> dict:
     output_filename = f"{job_id}_output.docx"
     output_path = OUTPUT_FOLDER / output_filename
     original_name = "黏贴文本排版"
@@ -520,6 +656,7 @@ def process_text_document(text: str, job_id: str, progress_callback=None, cover_
         str(output_path),
         progress_callback=progress_callback,
         cover_info=cover_info,
+        format_options=format_options,
     )
     elapsed = time.time() - start_time
 
@@ -541,7 +678,14 @@ def process_text_document(text: str, job_id: str, progress_callback=None, cover_
     )
 
 
-def process_merged_document(cover_path: Path, body_path: Path, body_name: str, job_id: str, progress_callback=None) -> dict:
+def process_merged_document(
+    cover_path: Path,
+    body_path: Path,
+    body_name: str,
+    job_id: str,
+    progress_callback=None,
+    format_options=None,
+) -> dict:
     output_filename = f"{job_id}_output.docx"
     output_path = OUTPUT_FOLDER / output_filename
 
@@ -553,6 +697,7 @@ def process_merged_document(cover_path: Path, body_path: Path, body_name: str, j
         str(body_path),
         str(output_path),
         progress_callback=progress_callback,
+        format_options=format_options,
     )
     elapsed = time.time() - start_time
 
@@ -662,12 +807,19 @@ def api_format():
         original_name = get_display_name(file.filename)
         input_path = UPLOAD_FOLDER / f"{job_id}_input.docx"
         cover_info = extract_cover_info(request.form)
+        format_options = extract_format_options(request.form)
 
         file.save(str(input_path))
         file_size = input_path.stat().st_size
         logger.info(f"收到文件: {file.filename} ({file_size / 1024:.1f} KB)")
 
-        response_data = process_uploaded_document(input_path, original_name, job_id, cover_info=cover_info)
+        response_data = process_uploaded_document(
+            input_path,
+            original_name,
+            job_id,
+            cover_info=cover_info,
+            format_options=format_options,
+        )
         return jsonify(response_data)
 
     except JobProcessingError as exc:
@@ -693,13 +845,14 @@ def api_format_text():
         data = request.get_json(silent=True) or request.form or {}
         text = data.get("text", "").strip()
         cover_info = extract_cover_info(data)
+        format_options = extract_format_options(data)
 
         if not text:
             return json_error("请输入有效的文字内容", 400)
 
         job_id = str(uuid.uuid4())[:8]
         original_name = "黏贴文本排版"
-        return jsonify(process_text_document(text, job_id, cover_info=cover_info))
+        return jsonify(process_text_document(text, job_id, cover_info=cover_info, format_options=format_options))
     except JobProcessingError as exc:
         return json_error(exc.message, exc.status_code)
     except Exception as e:
@@ -739,6 +892,7 @@ def api_format_merge():
     try:
         job_id = str(uuid.uuid4())[:8]
         body_name = get_display_name(body_file.filename)
+        format_options = extract_format_options(request.form)
 
         cover_path = UPLOAD_FOLDER / f"{job_id}_cover.docx"
         body_path = UPLOAD_FOLDER / f"{job_id}_body.docx"
@@ -750,7 +904,13 @@ def api_format_merge():
         body_size = body_path.stat().st_size
         logger.info(f"收到合并请求: 封面={cover_file.filename} ({cover_size / 1024:.1f} KB), 正文={body_file.filename} ({body_size / 1024:.1f} KB)")
 
-        response_data = process_merged_document(cover_path, body_path, body_name, job_id)
+        response_data = process_merged_document(
+            cover_path,
+            body_path,
+            body_name,
+            job_id,
+            format_options=format_options,
+        )
         return jsonify(response_data)
 
     except JobProcessingError as exc:
@@ -771,6 +931,9 @@ def api_format_async():
     cleanup_expired_files(UPLOAD_FOLDER, OUTPUT_FOLDER)
     cleanup_expired_jobs()
 
+    if not async_jobs_enabled():
+        return json_async_unavailable()
+
     if "file" not in request.files:
         return json_error("未检测到上传文件", 400)
 
@@ -786,6 +949,7 @@ def api_format_async():
     input_path = UPLOAD_FOLDER / f"{job['id']}_input.docx"
     original_name = get_display_name(file.filename)
     cover_info = extract_cover_info(request.form)
+    format_options = extract_format_options(request.form)
 
     try:
         file.save(str(input_path))
@@ -802,6 +966,7 @@ def api_format_async():
                 job["id"],
                 progress_callback=progress_callback,
                 cover_info=cover_info,
+                format_options=format_options,
             ),
             cleanup_paths=(input_path,),
         )
@@ -820,9 +985,13 @@ def api_format_text_async():
     cleanup_expired_files(UPLOAD_FOLDER, OUTPUT_FOLDER)
     cleanup_expired_jobs()
 
+    if not async_jobs_enabled():
+        return json_async_unavailable()
+
     data = request.get_json(silent=True) or request.form or {}
     text = data.get("text", "").strip()
     cover_info = extract_cover_info(data)
+    format_options = extract_format_options(data)
 
     if not text:
         return json_error("请输入有效的文字内容", 400)
@@ -837,6 +1006,7 @@ def api_format_text_async():
             job["id"],
             progress_callback=progress_callback,
             cover_info=cover_info,
+            format_options=format_options,
         ),
     )
     return jsonify(build_async_job_response(job)), 202
@@ -847,6 +1017,9 @@ def api_format_merge_async():
     """创建封面 + 正文合并排版异步任务。"""
     cleanup_expired_files(UPLOAD_FOLDER, OUTPUT_FOLDER)
     cleanup_expired_jobs()
+
+    if not async_jobs_enabled():
+        return json_async_unavailable()
 
     if not HAS_DOCXCOMPOSE:
         return json_error("当前服务未安装封面合并组件，请改用“自动生成模板封面”或补装 docxcompose。", 503)
@@ -873,6 +1046,7 @@ def api_format_merge_async():
     cover_path = UPLOAD_FOLDER / f"{job['id']}_cover.docx"
     body_path = UPLOAD_FOLDER / f"{job['id']}_body.docx"
     body_name = get_display_name(body_file.filename)
+    format_options = extract_format_options(request.form)
 
     try:
         cover_file.save(str(cover_path))
@@ -899,6 +1073,7 @@ def api_format_merge_async():
                 body_name,
                 job["id"],
                 progress_callback=progress_callback,
+                format_options=format_options,
             ),
             cleanup_paths=(cover_path, body_path),
         )

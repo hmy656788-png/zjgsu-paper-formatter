@@ -1005,6 +1005,78 @@ body {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.format-options-panel {
+  width: 100%;
+  margin-bottom: var(--space-lg);
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+  box-shadow: var(--shadow-soft);
+}
+
+.format-options-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.format-options-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.format-options-hint {
+  font-size: 0.82rem;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.format-options-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.format-option-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 120px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-lg);
+  background: rgba(7, 15, 26, 0.48);
+  cursor: pointer;
+  transition: border-color 0.2s ease, transform 0.2s ease, background 0.2s ease;
+}
+
+.format-option-card:hover {
+  border-color: rgba(109, 161, 224, 0.38);
+  background: rgba(9, 19, 32, 0.72);
+  transform: translateY(-1px);
+}
+
+.format-option-card input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary-light);
+}
+
+.format-option-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.format-option-desc {
+  font-size: 0.78rem;
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+
 .cover-builder-toggle {
   display: inline-flex;
   align-items: center;
@@ -1075,6 +1147,10 @@ body {
 }
 
 @media (max-width: 720px) {
+  .format-options-grid {
+    grid-template-columns: 1fr;
+  }
+
   .cover-meta-grid {
     grid-template-columns: 1fr;
   }

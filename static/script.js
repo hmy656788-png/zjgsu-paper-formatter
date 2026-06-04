@@ -471,10 +471,10 @@
   }
 
   // ====== 工具 ======
-  // 单次上传上限（需与后端 app.py 的 MAX_CONTENT_LENGTH 保持一致，留少量余量给 multipart 开销）。
-  // 同时保留对 413 的处理，兼容某些平台（如 Vercel serverless）更小的请求体硬限制。
-  const MAX_UPLOAD_BYTES = 48 * 1024 * 1024;
-  const PAYLOAD_LIMIT_MESSAGE = "文档体积超过服务器单次上传上限（约 50MB）。请压缩正文中的图片后重试。";
+  // 部署在 Vercel 上时，单次请求体有约 4.5MB 的平台硬限制（FUNCTION_PAYLOAD_TOO_LARGE）。
+  // 这里提前拦截，避免用户看到天书般的平台报错；并对 413 做兜底处理。
+  const MAX_UPLOAD_BYTES = 4.4 * 1024 * 1024;
+  const PAYLOAD_LIMIT_MESSAGE = "文档体积超过服务器单次上传上限（约 4.5MB）。请压缩正文中的图片后再传。";
   function formatSize(b) { if (b < 1024) return b + " B"; if (b < 1048576) return (b / 1024).toFixed(1) + " KB"; return (b / 1048576).toFixed(2) + " MB"; }
   function exceedsUploadLimit(totalBytes) {
     if (totalBytes > MAX_UPLOAD_BYTES) {

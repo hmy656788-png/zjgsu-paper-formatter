@@ -1,0 +1,18 @@
+# Render Blueprint — 一键部署到常驻服务器（Render）
+# 用法：Render 控制台 → New → Blueprint → 选本仓库即可。
+#
+# 关键：必须单 worker + 多线程。
+#   - 单 worker：异步任务进度（PROGRESS_JOBS）与 /tmp 临时文件是进程内共享的，
+#     多 worker 会导致「创建任务的进程」与「拉取进度/下载的进程」不是同一个，从而 404。
+#   - 多线程：支撑 SSE 长连接 + 同时处理多个请求。
+services:
+  - type: web
+    name: zjgsu-paper-formatter
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --threads 8 --timeout 300 --bind 0.0.0.0:$PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7

@@ -9,6 +9,7 @@ import re
 import json
 import uuid
 import time
+import zipfile
 import threading
 import logging
 from contextlib import suppress
@@ -20,9 +21,11 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 from format_paper import (
     ParagraphType,
+    DocumentConcatError,
     format_academic_paper,
     format_academic_paper_from_text,
     merge_cover_and_body,
+    concatenate_documents,
 )
 
 try:
@@ -95,6 +98,31 @@ def allowed_file(filename: str) -> bool:
     return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
 
 
+def is_valid_docx_upload(file_storage) -> bool:
+    """保存前校验上传文件确为有效的 .docx（OOXML zip 包），拦截改了后缀的损坏/非法文件。
+
+    检查两层：1）确为合法 zip；2）包内含 OOXML 必备的 [Content_Types].xml。
+    校验完会把流复位到开头，保证后续 save() 写入完整内容。
+    """
+    stream = getattr(file_storage, "stream", None)
+    if stream is None:
+        return False
+    try:
+        if not zipfile.is_zipfile(stream):
+            return False
+        stream.seek(0)
+        with zipfile.ZipFile(stream) as zf:
+            return "[Content_Types].xml" in zf.namelist()
+    except (OSError, ValueError, zipfile.BadZipFile):
+        return False
+    finally:
+        with suppress(Exception):
+            stream.seek(0)
+
+
+INVALID_DOCX_MESSAGE = "{label}不是有效的 .docx（可能已损坏或被改了后缀），请用 Word 重新导出后再试。"
+
+
 def is_api_request() -> bool:
     return request.path.startswith("/api/")
 
@@ -116,6 +144,7 @@ def get_health_payload() -> dict:
         },
         "features": {
             "cover_merge": HAS_DOCXCOMPOSE,
+            "concat": HAS_DOCXCOMPOSE,
         },
     }
 
@@ -165,6 +194,14 @@ def get_download_name(filename: str, fallback: str) -> str:
     candidate = basename or fallback
     stem = Path(candidate).stem.strip() or get_display_name(fallback)
     return f"{stem}.docx"
+
+
+def parse_bool_flag(payload, key: str, default: bool = True) -> bool:
+    """从表单/JSON 载荷中解析布尔开关；字段缺省时返回 default。"""
+    raw = payload.get(key) if payload else None
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def extract_cover_info(payload) -> dict | None:
@@ -303,6 +340,42 @@ def build_preview(summary: dict) -> dict:
             },
         ],
         "outline": outline,
+    }
+
+
+def build_concat_preview(summary: dict | None = None) -> dict:
+    """为纯拼接结果生成展示用预览（不做排版分析，只说明拼接动作）。"""
+    summary = summary or {}
+    page_number_restarted = bool(summary.get("page_number_restarted"))
+
+    if page_number_restarted:
+        page_highlight = {
+            "eyebrow": "页码衔接",
+            "title": "封面不计页码，正文从第 1 页重新编号",
+            "description": "正文另起一页，并把正文页码从第 1 页重新计数，封面不显示页码——正文原有的页边距、页眉页脚与页码字段保持不变。",
+        }
+    else:
+        page_highlight = {
+            "eyebrow": "分页衔接",
+            "title": "正文从新的一页开始",
+            "description": "在两个文档衔接处分节换页，正文另起一页。页码沿用各自原有设置，未做重新编号。",
+        }
+
+    return {
+        "highlights": [
+            {
+                "eyebrow": "原样保留",
+                "title": "正文的排版形态完整保留",
+                "description": "正文的字体、字号、行距、页边距、页眉页脚、图片与表格全部保持原有样式，只是把封面接到了它前面。",
+            },
+            {
+                "eyebrow": "智能合并",
+                "title": "文档级合并，规避手动拼接乱码",
+                "description": "采用 docxcompose 合并文档主体、样式、编号与图片关系，避免直接复制 XML 造成的样式错乱与乱码。",
+            },
+            page_highlight,
+        ],
+        "outline": [],
     }
 
 
@@ -451,6 +524,7 @@ def build_success_response(
     elapsed: float,
     format_result,
     include_format_result_alias: bool = False,
+    preview: dict | None = None,
 ) -> dict:
     format_summary = normalize_format_summary(format_result)
     response_data = {
@@ -460,7 +534,7 @@ def build_success_response(
         "download_url": f"/api/download/{output_filename}",
         "download_name": download_name,
         "format_summary": format_summary,
-        "preview": build_preview(format_summary),
+        "preview": preview if preview is not None else build_preview(format_summary),
         "stats": {
             "input_size": input_size_text,
             "output_size": output_size_text,
@@ -575,6 +649,46 @@ def process_merged_document(cover_path: Path, body_path: Path, body_name: str, j
     )
 
 
+def process_concatenated_document(first_path: Path, second_path: Path, output_name: str, job_id: str, progress_callback=None, restart_body_page_number: bool = True) -> dict:
+    output_filename = f"{job_id}_output.docx"
+    output_path = OUTPUT_FOLDER / output_filename
+
+    first_size_bytes = first_path.stat().st_size
+    second_size_bytes = second_path.stat().st_size
+    start_time = time.time()
+    try:
+        concat_result = concatenate_documents(
+            str(first_path),
+            str(second_path),
+            str(output_path),
+            progress_callback=progress_callback,
+            restart_body_page_number=restart_body_page_number,
+        )
+    except DocumentConcatError as exc:
+        with suppress(OSError):
+            output_path.unlink()
+        raise JobProcessingError(str(exc), 400) from exc
+    elapsed = time.time() - start_time
+
+    if not concat_result:
+        with suppress(OSError):
+            output_path.unlink()
+        raise JobProcessingError("文档拼接失败，请检查两个文档是否均为有效的 .docx 文件", 500)
+
+    output_size_bytes = output_path.stat().st_size
+    return build_success_response(
+        job_id=job_id,
+        original_name=output_name,
+        output_filename=output_filename,
+        download_name=f"{output_name}_拼接后.docx",
+        input_size_text=f"{(first_size_bytes + second_size_bytes) / 1024:.1f} KB",
+        output_size_text=f"{output_size_bytes / 1024:.1f} KB",
+        elapsed=elapsed,
+        format_result=concat_result,
+        preview=build_concat_preview(concat_result),
+    )
+
+
 # ============================================================
 # 路由
 # ============================================================
@@ -656,6 +770,9 @@ def api_format():
     if not allowed_file(file.filename):
         return json_error("仅支持 .docx 格式的文件", 400)
 
+    if not is_valid_docx_upload(file):
+        return json_error(INVALID_DOCX_MESSAGE.format(label="上传的文件"), 400)
+
     input_path = None
     try:
         job_id = str(uuid.uuid4())[:8]
@@ -734,6 +851,11 @@ def api_format_merge():
     if not allowed_file(body_file.filename):
         return json_error("正文文档仅支持 .docx 格式", 400)
 
+    if not is_valid_docx_upload(cover_file):
+        return json_error(INVALID_DOCX_MESSAGE.format(label="封面文档"), 400)
+    if not is_valid_docx_upload(body_file):
+        return json_error(INVALID_DOCX_MESSAGE.format(label="正文文档"), 400)
+
     cover_path = None
     body_path = None
     try:
@@ -781,6 +903,9 @@ def api_format_async():
 
     if not allowed_file(file.filename):
         return json_error("仅支持 .docx 格式的文件", 400)
+
+    if not is_valid_docx_upload(file):
+        return json_error(INVALID_DOCX_MESSAGE.format(label="上传的文件"), 400)
 
     job = create_progress_job("format")
     input_path = UPLOAD_FOLDER / f"{job['id']}_input.docx"
@@ -869,6 +994,11 @@ def api_format_merge_async():
     if not allowed_file(body_file.filename):
         return json_error("正文文档仅支持 .docx 格式", 400)
 
+    if not is_valid_docx_upload(cover_file):
+        return json_error(INVALID_DOCX_MESSAGE.format(label="封面文档"), 400)
+    if not is_valid_docx_upload(body_file):
+        return json_error(INVALID_DOCX_MESSAGE.format(label="正文文档"), 400)
+
     job = create_progress_job("format_merge")
     cover_path = UPLOAD_FOLDER / f"{job['id']}_cover.docx"
     body_path = UPLOAD_FOLDER / f"{job['id']}_body.docx"
@@ -907,6 +1037,142 @@ def api_format_merge_async():
         with PROGRESS_JOBS_LOCK:
             PROGRESS_JOBS.pop(job["id"], None)
         for path in (cover_path, body_path):
+            with suppress(OSError):
+                path.unlink()
+        raise
+
+
+def _validate_concat_files():
+    """校验拼接接口的两个上传文件，通过则返回 (first_file, second_file)，否则返回错误响应。"""
+    if not HAS_DOCXCOMPOSE:
+        return None, json_error("当前服务未安装文档拼接组件，请补装 docxcompose 后重试。", 503)
+
+    if "first" not in request.files:
+        return None, json_error("未检测到第一个文档", 400)
+    if "second" not in request.files:
+        return None, json_error("未检测到第二个文档", 400)
+
+    first_file = request.files["first"]
+    second_file = request.files["second"]
+
+    if first_file.filename == "":
+        return None, json_error("未选择第一个文档", 400)
+    if second_file.filename == "":
+        return None, json_error("未选择第二个文档", 400)
+
+    if not allowed_file(first_file.filename):
+        return None, json_error("第一个文档仅支持 .docx 格式", 400)
+    if not allowed_file(second_file.filename):
+        return None, json_error("第二个文档仅支持 .docx 格式", 400)
+
+    if not is_valid_docx_upload(first_file):
+        return None, json_error(INVALID_DOCX_MESSAGE.format(label="第一个文档"), 400)
+    if not is_valid_docx_upload(second_file):
+        return None, json_error(INVALID_DOCX_MESSAGE.format(label="第二个文档"), 400)
+
+    return (first_file, second_file), None
+
+
+@app.route("/api/concat", methods=["POST"])
+def api_concat():
+    """拼接两个文档：保持各自排版形态不变，合并为一个 .docx。"""
+    cleanup_expired_files(UPLOAD_FOLDER, OUTPUT_FOLDER)
+    cleanup_expired_jobs()
+
+    files, error = _validate_concat_files()
+    if error is not None:
+        return error
+    first_file, second_file = files
+
+    first_path = None
+    second_path = None
+    try:
+        job_id = str(uuid.uuid4())[:8]
+        output_name = get_display_name(second_file.filename)
+        restart_page_number = parse_bool_flag(request.form, "restart_page_number")
+
+        first_path = UPLOAD_FOLDER / f"{job_id}_first.docx"
+        second_path = UPLOAD_FOLDER / f"{job_id}_second.docx"
+
+        first_file.save(str(first_path))
+        second_file.save(str(second_path))
+
+        first_size = first_path.stat().st_size
+        second_size = second_path.stat().st_size
+        logger.info(
+            f"收到拼接请求: 文档一={first_file.filename} ({first_size / 1024:.1f} KB), "
+            f"文档二={second_file.filename} ({second_size / 1024:.1f} KB)"
+        )
+
+        response_data = process_concatenated_document(
+            first_path, second_path, output_name, job_id,
+            restart_body_page_number=restart_page_number,
+        )
+        return jsonify(response_data)
+
+    except JobProcessingError as exc:
+        return json_error(exc.message, exc.status_code)
+    except Exception as e:
+        logger.error(f"拼接处理过程中出现异常: {e}", exc_info=True)
+        return json_error("服务器内部错误，请稍后重试。", 500)
+    finally:
+        for path in (first_path, second_path):
+            if path is not None:
+                with suppress(OSError):
+                    path.unlink()
+
+
+@app.route("/api/concat_async", methods=["POST"])
+def api_concat_async():
+    """创建文档拼接异步任务，并通过 SSE 推送真实进度。"""
+    cleanup_expired_files(UPLOAD_FOLDER, OUTPUT_FOLDER)
+    cleanup_expired_jobs()
+
+    files, error = _validate_concat_files()
+    if error is not None:
+        return error
+    first_file, second_file = files
+
+    job = create_progress_job("concat")
+    first_path = UPLOAD_FOLDER / f"{job['id']}_first.docx"
+    second_path = UPLOAD_FOLDER / f"{job['id']}_second.docx"
+    output_name = get_display_name(second_file.filename)
+    restart_page_number = parse_bool_flag(request.form, "restart_page_number")
+
+    try:
+        first_file.save(str(first_path))
+        second_file.save(str(second_path))
+        first_size = first_path.stat().st_size
+        second_size = second_path.stat().st_size
+        logger.info(
+            f"收到异步拼接请求: 文档一={first_file.filename} ({first_size / 1024:.1f} KB), "
+            f"文档二={second_file.filename} ({second_size / 1024:.1f} KB)"
+        )
+
+        emit_job_progress(
+            job,
+            1,
+            "两个文档上传完成，正在准备拼接",
+            f"总大小 {(first_size + second_size) / 1024:.1f} KB",
+        )
+        launch_background_job(
+            job,
+            "异步文档拼接",
+            lambda progress_callback: process_concatenated_document(
+                first_path,
+                second_path,
+                output_name,
+                job["id"],
+                progress_callback=progress_callback,
+                restart_body_page_number=restart_page_number,
+            ),
+            cleanup_paths=(first_path, second_path),
+        )
+        return jsonify(build_async_job_response(job)), 202
+    except Exception:
+        with PROGRESS_JOBS_LOCK:
+            PROGRESS_JOBS.pop(job["id"], None)
+        for path in (first_path, second_path):
             with suppress(OSError):
                 path.unlink()
         raise

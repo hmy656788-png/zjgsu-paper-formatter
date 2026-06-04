@@ -30,8 +30,10 @@ from zipfile import ZipFile
 
 from docx import Document
 from docx.shared import Pt, RGBColor, Cm
+from docx.enum.section import WD_SECTION
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK, WD_LINE_SPACING
+from docx.opc.exceptions import PackageNotFoundError
 from docx.oxml.ns import qn, nsdecls
 from docx.oxml import OxmlElement, parse_xml
 from lxml import etree
@@ -3040,13 +3042,7 @@ def merge_cover_and_body(cover_path: str, body_path: str, output_path: str, prog
         # 在正文首节重启页码为 1
         merged_sections = list(cover_doc.sections)
         if len(merged_sections) > cover_section_count:
-            body_first_section = merged_sections[cover_section_count]
-            sect_pr = body_first_section._sectPr
-            pg_num_type = sect_pr.find(qn("w:pgNumType"))
-            if pg_num_type is None:
-                pg_num_type = OxmlElement("w:pgNumType")
-                sect_pr.append(pg_num_type)
-            pg_num_type.set(qn("w:start"), "1")
+            _set_section_page_number_start(merged_sections[cover_section_count], 1)
 
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -3067,6 +3063,160 @@ def merge_cover_and_body(cover_path: str, body_path: str, output_path: str, prog
         if formatted_body_path:
             with suppress(OSError):
                 Path(formatted_body_path).unlink()
+
+
+class DocumentConcatError(Exception):
+    """拼接过程中可直接展示给用户的错误（如文档损坏 / 非有效 .docx）。"""
+
+
+def _is_blank_paragraph(paragraph) -> bool:
+    """判断段落是否为可安全删除的空段落（无文字、无图片/对象/换行符）。"""
+    if paragraph.text.strip():
+        return False
+    if paragraph._element.xpath(".//w:drawing | .//w:pict | .//w:object | .//w:br | .//w:tab"):
+        return False
+    p_pr = paragraph._element.find(qn("w:pPr"))
+    if p_pr is not None and p_pr.find(qn("w:sectPr")) is not None:
+        return False
+    return True
+
+
+def _strip_trailing_blank_paragraphs(doc) -> int:
+    """删除文档末尾连续的空段落，降低拼接后多出空白页的概率。"""
+    removed = 0
+    for paragraph in reversed(doc.paragraphs):
+        if not _is_blank_paragraph(paragraph):
+            break
+        paragraph._element.getparent().remove(paragraph._element)
+        removed += 1
+    return removed
+
+
+def _set_section_page_number_start(section, start_value: int) -> None:
+    """设置某一节的页码起始值（w:pgNumType@w:start）。"""
+    sect_pr = section._sectPr
+    pg_num_type = sect_pr.find(qn("w:pgNumType"))
+    if pg_num_type is None:
+        pg_num_type = OxmlElement("w:pgNumType")
+        sect_pr.append(pg_num_type)
+    pg_num_type.set(qn("w:start"), str(start_value))
+
+
+def _strip_header_footer_references(section) -> None:
+    """移除某一节的页眉/页脚引用，使该节（如封面）不显示页眉与页码。
+
+    只删除该节 sectPr 中的引用元素，不动被引用的页眉/页脚部件本身，
+    因此与其它节共享的页脚（含页码字段）不受影响。
+    """
+    sect_pr = section._sectPr
+    for tag in ("w:headerReference", "w:footerReference"):
+        for ref in sect_pr.findall(qn(tag)):
+            sect_pr.remove(ref)
+
+
+def concatenate_documents(first_path: str, second_path: str, output_path: str,
+                          progress_callback=None, restart_body_page_number: bool = True):
+    """
+    纯拼接两个 Word 文档，完整保留正文原有排版形态。
+
+    典型场景：把封面（first）接到已排版好的正文（second）前面，合成一个文档。
+    与 merge_cover_and_body 不同，这里不会对任何一个文档做排版处理。
+
+    实现要点：
+    - 以“正文”为主文档（docxcompose 仅会简化被插入文档的节属性，主文档的
+      页边距、页眉页脚、页码字段等会完整保留），再把封面插入到最前面；
+    - 在封面末尾加一个“下一页”分节符，使封面成为独立的一节，正文据此从
+      新的一页开始；
+    - 用 docxcompose 在文档级别合并主体、样式、编号与图片关系，避免直接
+      复制 XML（或让模型手动拼接）导致的样式错乱、乱码。
+
+    Args:
+        first_path: 排在前面的文档（例如封面）路径
+        second_path: 排在后面、需完整保留排版的文档（例如已排版好的正文）路径
+        output_path: 拼接结果输出路径
+        progress_callback: 进度回调（用于 SSE 推送）
+        restart_body_page_number: 是否让封面不计入页码、正文从第 1 页重新
+            编号（默认 True，契合“封面 + 正文”场景）。仅调整页码与封面页眉
+            页脚引用，不改动正文任何排版形态。
+
+    Raises:
+        DocumentConcatError: 任一文档损坏或不是有效的 .docx 文件时抛出
+            （便于上层返回明确的提示）。
+
+    Returns:
+        拼接结果 dict（成功）或 False（缺少前置条件 / 未知失败）
+    """
+    first_file = Path(first_path)
+    second_file = Path(second_path)
+
+    if not first_file.exists():
+        logger.error(f"第一个文档不存在：{first_path}")
+        return False
+
+    if not second_file.exists():
+        logger.error(f"第二个文档不存在：{second_path}")
+        return False
+
+    try:
+        from docxcompose.composer import Composer
+    except ImportError:
+        logger.error("未安装 docxcompose，无法拼接文档")
+        return False
+
+    try:
+        emit_progress(progress_callback, 1, "正在读取两个文档")
+        # 以正文为主文档，完整保留其页边距、页眉页脚与页码字段。
+        try:
+            body_doc = Document(second_path)
+        except PackageNotFoundError as exc:
+            raise DocumentConcatError("第二个文档无法打开，可能已损坏或不是有效的 .docx 文件，请用 Word 重新导出后再试。") from exc
+        body_section_count = len(body_doc.sections)
+
+        emit_progress(progress_callback, 2, "正在把封面封装为独立的一节")
+        try:
+            cover_doc = Document(first_path)
+        except PackageNotFoundError as exc:
+            raise DocumentConcatError("第一个文档无法打开，可能已损坏或不是有效的 .docx 文件，请用 Word 重新导出后再试。") from exc
+        # 先清掉封面尾部多余的空段落，再加“下一页”分节符，避免衔接处多出空白页；
+        # 分节符让封面成为独立一节、正文据此从新的一页开始。
+        _strip_trailing_blank_paragraphs(cover_doc)
+        cover_doc.add_section(WD_SECTION.NEW_PAGE)
+
+        emit_progress(progress_callback, 3, "正在把封面拼接到正文之前")
+        composer = Composer(body_doc)
+        composer.insert(0, cover_doc)
+
+        # 正文的各节始终排在合并文档的末尾，据此定位正文首节的位置。
+        merged_sections = list(body_doc.sections)
+        body_first_index = len(merged_sections) - body_section_count
+
+        page_number_restarted = False
+        if restart_body_page_number and 0 <= body_first_index < len(merged_sections):
+            emit_progress(progress_callback, 4, "正在让封面不计页码、正文从第 1 页重新编号")
+            # 封面所在的各节：去掉页眉/页脚引用，使封面不显示页码。
+            for i in range(body_first_index):
+                _strip_header_footer_references(merged_sections[i])
+            # 正文首节：页码从第 1 页开始。
+            _set_section_page_number_start(merged_sections[body_first_index], 1)
+            page_number_restarted = True
+
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        emit_progress(progress_callback, 4, "正在生成拼接后的文档")
+        composer.save(output_path)
+
+        logger.info(f"拼接完成！{first_path} + {second_path} → {output_path}")
+        return {
+            "concatenated": True,
+            "restart_body_page_number": bool(restart_body_page_number),
+            "page_number_restarted": page_number_restarted,
+        }
+
+    except DocumentConcatError:
+        raise
+    except Exception as e:
+        logger.error(f"拼接文档失败: {e}", exc_info=True)
+        return False
 
 
 # ============================================================

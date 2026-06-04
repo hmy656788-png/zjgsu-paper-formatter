@@ -793,6 +793,14 @@ body {
   text-align: left;
 }
 
+/* 只展示一个面板（如拼接结果隐藏了文档结构）时，单列居中显示 */
+.result-preview.is-single {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 640px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .preview-panel {
   padding: var(--space-lg);
   border-radius: var(--radius-lg);
@@ -995,6 +1003,200 @@ body {
   color: var(--error);
   border-color: var(--error);
   background: hsla(0, 72%, 58%, 0.1);
+}
+
+/* ====== 拼接文档 ====== */
+.concat-section {
+  width: 100%;
+  animation: fadeInUp 0.5s var(--ease-out) both;
+}
+
+.concat-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-lg);
+}
+
+.concat-slot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.concat-slot-tag {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  padding-left: var(--space-xs);
+}
+
+.concat-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: var(--space-xl) var(--space-lg);
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.3s var(--ease-out);
+}
+
+.concat-zone:hover,
+.concat-zone.drag-over {
+  border-color: var(--primary-light);
+  color: var(--primary-light);
+  background: var(--bg-card-hover);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25), 0 0 24px var(--primary-glow);
+}
+
+.concat-zone.drag-over {
+  border-color: var(--accent);
+  box-shadow: 0 0 30px var(--accent-glow);
+}
+
+.concat-zone.is-busy {
+  opacity: 0.6;
+  cursor: not-allowed;
+  pointer-events: none;
+  transform: none;
+  box-shadow: none;
+}
+
+.concat-zone-title {
+  font-size: 0.98rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.concat-zone-hint {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.concat-joint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  margin: 2px 0;
+}
+
+.concat-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: 12px var(--space-md);
+  border: 1px solid hsla(145, 65%, 48%, 0.25);
+  border-radius: var(--radius-md);
+  background: hsla(145, 65%, 48%, 0.06);
+}
+
+.concat-file-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  flex: 1;
+}
+
+.concat-file-tag {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--success);
+  background: hsla(145, 65%, 48%, 0.15);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+  letter-spacing: 0.04em;
+}
+
+.concat-file-name {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.concat-file-size {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.concat-file-remove {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.concat-file-remove:hover {
+  color: var(--error);
+  border-color: var(--error);
+  background: hsla(0, 72%, 58%, 0.1);
+}
+
+.concat-tip {
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary-light);
+  border-radius: var(--radius-md);
+  padding: 12px var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+
+.concat-tip strong {
+  color: var(--primary-light);
+}
+
+.concat-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-lg);
+  padding: 12px var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s var(--ease-out);
+}
+
+.concat-option:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+
+.concat-option input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary-light);
+  cursor: pointer;
+  flex-shrink: 0;
 }
 
 .cover-builder {
@@ -1406,7 +1608,7 @@ body {
 
   .input-tabs {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 4px;
     border-radius: var(--radius-lg);
   }
@@ -1414,6 +1616,9 @@ body {
   .tab-btn {
     min-height: 46px;
     font-size: 0.88rem;
+    padding-left: var(--space-xs);
+    padding-right: var(--space-xs);
+    white-space: nowrap;
   }
 
   .upload-zone {

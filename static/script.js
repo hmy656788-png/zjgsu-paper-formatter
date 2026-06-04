@@ -7,6 +7,7 @@
   const $ = (sel) => document.querySelector(sel);
   const tabUpload = $("#tabUpload");
   const tabPaste = $("#tabPaste");
+  const tabConcat = $("#tabConcat");
   const uploadSection = $("#uploadSection");
   const pasteSection = $("#pasteSection");
   const pasteArea = $("#pasteArea");
@@ -45,12 +46,40 @@
   const studentNameInput = $("#studentNameInput");
   const studentIdInput = $("#studentIdInput");
 
+  // 拼接文档
+  const concatSection = $("#concatSection");
+  const concatZoneFirst = $("#concatZoneFirst");
+  const concatZoneSecond = $("#concatZoneSecond");
+  const concatFirstInput = $("#concatFirstInput");
+  const concatSecondInput = $("#concatSecondInput");
+  const concatFirstCard = $("#concatFirstCard");
+  const concatSecondCard = $("#concatSecondCard");
+  const concatFirstName = $("#concatFirstName");
+  const concatSecondName = $("#concatSecondName");
+  const concatFirstSize = $("#concatFirstSize");
+  const concatSecondSize = $("#concatSecondSize");
+  const concatFirstRemove = $("#concatFirstRemove");
+  const concatSecondRemove = $("#concatSecondRemove");
+  const concatRestartPage = $("#concatRestartPage");
+  const btnConcat = $("#btnConcat");
+
   const statInputSize = $("#statInputSize");
   const statOutputSize = $("#statOutputSize");
   const statElapsed = $("#statElapsed");
   const previewHighlights = $("#previewHighlights");
   const previewOutline = $("#previewOutline");
+  const outlinePanel = $("#outlinePanel");
+  const resultPreview = $("#resultPreview");
+  const highlightsSubtitle = $("#highlightsSubtitle");
+  const resultTitle = $("#resultTitle");
+  const btnDownloadLabel = $("#btnDownloadLabel");
+  const btnResetLabel = $("#btnResetLabel");
+  const processingTitle = $("#processingTitle");
+  const processingHint = $("#processingHint");
   const steps = [$("#step1"), $("#step2"), $("#step3"), $("#step4")];
+  const stepLabelEls = steps.map((s) => (s ? s.querySelector("span") : null));
+  const FORMAT_STEP_LABELS = ["解析文档结构", "识别标题层级", "应用排版规则", "生成输出文档"];
+  const CONCAT_STEP_LABELS = ["读取两个文档", "保留各自排版", "拼接文档内容", "生成输出文档"];
 
   const outlineLevelLabels = {
     title: "论文标题",
@@ -65,6 +94,9 @@
 
   let selectedFile = null;
   let selectedCover = null;
+  let selectedConcatFirst = null;
+  let selectedConcatSecond = null;
+  let currentMode = "format"; // "format" | "text" | "concat"
   let downloadUrl = "";
   let downloadName = "";
   let stepAnimationTimer = null;
@@ -117,21 +149,31 @@
 
   // ====== UI 切换 ======
   function showSection(sec) {
-    [uploadSection, pasteSection, filePreview, processingSection, resultSection, errorSection].forEach((s) => { if (s) s.classList.add("hidden"); });
+    [uploadSection, pasteSection, concatSection, filePreview, processingSection, resultSection, errorSection].forEach((s) => { if (s) s.classList.add("hidden"); });
     if (sec) sec.classList.remove("hidden");
   }
 
+  function setActiveTab(activeTab) {
+    [tabUpload, tabPaste, tabConcat].forEach((t) => { if (t) t.classList.toggle("active", t === activeTab); });
+  }
+
   function showUpload() {
-    tabUpload.classList.add("active"); tabPaste.classList.remove("active");
+    setActiveTab(tabUpload); currentMode = "format";
     updateRetryLabel();
     if (selectedFile) { showPreview(); return; }
     showSection(uploadSection);
   }
 
   function showPaste() {
-    tabUpload.classList.remove("active"); tabPaste.classList.add("active");
+    setActiveTab(tabPaste); currentMode = "text";
     updateRetryLabel();
     showSection(pasteSection);
+  }
+
+  function showConcat() {
+    setActiveTab(tabConcat); currentMode = "concat";
+    updateRetryLabel();
+    showSection(concatSection);
   }
 
   function showPreview() { updateRetryLabel(); showSection(filePreview); }
@@ -213,8 +255,18 @@
     if (processingLive) processingLive.textContent = message || "正在准备任务...";
   }
 
+  function setStepLabels(labels) {
+    stepLabelEls.forEach((el, i) => { if (el && labels[i]) el.textContent = labels[i]; });
+  }
+
   function showProcessing(useAnimatedSteps = false) {
     stopResultReveal(); showSection(processingSection);
+    const isConcat = currentMode === "concat";
+    setStepLabels(isConcat ? CONCAT_STEP_LABELS : FORMAT_STEP_LABELS);
+    if (processingTitle) processingTitle.textContent = isConcat ? "正在拼接中..." : "正在排版中...";
+    if (processingHint) processingHint.textContent = isConcat
+      ? "保持两个文档原有排版，合并为一个文件"
+      : "智能识别论文结构，应用浙工商学术排版规范";
     resetSteps();
     setStepProgress(1);
     setProcessingLive("正在准备任务...");
@@ -223,6 +275,15 @@
 
   function showResult(data) {
     stopResultReveal(); completeSteps(); showSection(resultSection);
+    const isConcat = currentMode === "concat";
+    if (resultTitle) resultTitle.textContent = isConcat ? "拼接完成！" : "排版完成！";
+    if (btnDownloadLabel) btnDownloadLabel.textContent = isConcat ? "下载拼接文档" : "下载排版文档";
+    if (btnResetLabel) btnResetLabel.textContent = isConcat ? "继续拼接其他文档" : "继续排版其他文档";
+    if (outlinePanel) outlinePanel.classList.toggle("hidden", isConcat);
+    if (resultPreview) resultPreview.classList.toggle("is-single", isConcat);
+    if (highlightsSubtitle) highlightsSubtitle.textContent = isConcat
+      ? "保持两个文档各自的排版形态，仅把它们合并为一个文件"
+      : "把真正做过的页面设置、页眉页码和结构识别结果直接展示出来";
     statInputSize.textContent = data.stats.input_size;
     statOutputSize.textContent = data.stats.output_size;
     statElapsed.textContent = data.stats.elapsed;
@@ -253,14 +314,17 @@
   function closeProgressStream() { if (currentEventSource) { currentEventSource.close(); currentEventSource = null; } }
 
   function syncBusyState() {
-    [tabUpload, tabPaste, pasteArea, btnFormatText, fileRemove, btnFormat, coverFileRemove].forEach((el) => { if (el) el.disabled = isSubmitting; });
+    [tabUpload, tabPaste, tabConcat, pasteArea, btnFormatText, fileRemove, btnFormat, coverFileRemove, concatFirstRemove, concatSecondRemove, concatRestartPage].forEach((el) => { if (el) el.disabled = isSubmitting; });
     [coverMetaEnabled, coverTitleInput, collegeInput, teacherInput, classNameInput, studentNameInput, studentIdInput].forEach((el) => { if (el) el.disabled = isSubmitting; });
     if (uploadZone) { if (isSubmitting) uploadZone.classList.remove("drag-over"); uploadZone.classList.toggle("is-busy", isSubmitting); }
     if (coverZone) { if (isSubmitting) coverZone.classList.remove("drag-over"); coverZone.classList.toggle("is-busy", isSubmitting); }
+    [concatZoneFirst, concatZoneSecond].forEach((z) => { if (z) { if (isSubmitting) z.classList.remove("drag-over"); z.classList.toggle("is-busy", isSubmitting); } });
+    updateConcatButton();
   }
 
   function updateRetryLabel() {
     if (!retryLabel) return;
+    if (tabConcat && tabConcat.classList.contains("active")) { retryLabel.textContent = "重新选择文档"; return; }
     if (tabPaste.classList.contains("active")) { retryLabel.textContent = "返回继续编辑"; return; }
     retryLabel.textContent = selectedFile ? "重新选择文件" : "重新上传";
   }
@@ -394,6 +458,7 @@
 
   async function startAsyncJob(endpoint, fetchOptions, controller, fallbackMessage) {
     const res = await fetch(endpoint, fetchOptions);
+    if (res.status === 413) { showError(PAYLOAD_LIMIT_MESSAGE); return false; }
     const data = await parseApiResponse(res, fallbackMessage);
     if (!res.ok || !data.success) {
       showError(data.error || fallbackMessage);
@@ -406,10 +471,21 @@
   }
 
   // ====== 工具 ======
+  // 单次上传上限（需与后端 app.py 的 MAX_CONTENT_LENGTH 保持一致，留少量余量给 multipart 开销）。
+  // 同时保留对 413 的处理，兼容某些平台（如 Vercel serverless）更小的请求体硬限制。
+  const MAX_UPLOAD_BYTES = 48 * 1024 * 1024;
+  const PAYLOAD_LIMIT_MESSAGE = "文档体积超过服务器单次上传上限（约 50MB）。请压缩正文中的图片后重试。";
   function formatSize(b) { if (b < 1024) return b + " B"; if (b < 1048576) return (b / 1024).toFixed(1) + " KB"; return (b / 1048576).toFixed(2) + " MB"; }
+  function exceedsUploadLimit(totalBytes) {
+    if (totalBytes > MAX_UPLOAD_BYTES) {
+      showError(`两个文档合计约 ${formatSize(totalBytes)}，${PAYLOAD_LIMIT_MESSAGE}`);
+      return true;
+    }
+    return false;
+  }
   function validateDocx(f) {
     if (!f.name.toLowerCase().endsWith(".docx")) { showError("仅支持 .docx 格式的 Word 文档"); return false; }
-    if (f.size > 52428800) { showError("文件大小超过 50MB 限制"); return false; }
+    if (f.size > MAX_UPLOAD_BYTES) { showError(`该文档约 ${formatSize(f.size)}，${PAYLOAD_LIMIT_MESSAGE}`); return false; }
     return true;
   }
 
@@ -441,6 +517,42 @@
     updateFormatButton();
   }
 
+  // ====== 拼接文档：文件选择 ======
+  function updateConcatButton() {
+    if (!btnConcat) return;
+    btnConcat.disabled = isSubmitting || !selectedConcatFirst || !selectedConcatSecond;
+  }
+
+  function selectConcatFile(slot, file) {
+    if (!file || !validateDocx(file)) return;
+    const isFirst = slot === "first";
+    if (isFirst) selectedConcatFirst = file; else selectedConcatSecond = file;
+    (isFirst ? concatFirstName : concatSecondName).textContent = file.name;
+    (isFirst ? concatFirstSize : concatSecondSize).textContent = formatSize(file.size);
+    (isFirst ? concatZoneFirst : concatZoneSecond).classList.add("hidden");
+    (isFirst ? concatFirstCard : concatSecondCard).classList.remove("hidden");
+    updateConcatButton();
+  }
+
+  function removeConcatFile(slot) {
+    const isFirst = slot === "first";
+    if (isFirst) { selectedConcatFirst = null; if (concatFirstInput) concatFirstInput.value = ""; }
+    else { selectedConcatSecond = null; if (concatSecondInput) concatSecondInput.value = ""; }
+    (isFirst ? concatZoneFirst : concatZoneSecond).classList.remove("hidden");
+    (isFirst ? concatFirstCard : concatSecondCard).classList.add("hidden");
+    updateConcatButton();
+  }
+
+  function resetConcatSlots() {
+    selectedConcatFirst = null;
+    selectedConcatSecond = null;
+    if (concatFirstInput) concatFirstInput.value = "";
+    if (concatSecondInput) concatSecondInput.value = "";
+    [concatZoneFirst, concatZoneSecond].forEach((z) => { if (z) z.classList.remove("hidden"); });
+    [concatFirstCard, concatSecondCard].forEach((c) => { if (c) c.classList.add("hidden"); });
+    updateConcatButton();
+  }
+
   // ====== 重置 ======
   function resetAll() {
     abortActiveRequest(); stopResultReveal(); stopStepAnimation();
@@ -449,13 +561,17 @@
     fileInput.value = ""; coverInput.value = "";
     coverZone.classList.remove("hidden");
     coverFileCard.classList.add("hidden");
+    resetConcatSlots();
     updateRetryLabel(); updateFormatButton();
-    if (tabPaste.classList.contains("active")) showPaste(); else showUpload();
+    if (tabConcat && tabConcat.classList.contains("active")) showConcat();
+    else if (tabPaste.classList.contains("active")) showPaste();
+    else showUpload();
   }
 
   // ====== 上传排版（自动判断是否合并） ======
   async function uploadAndFormatLegacy() {
     if (!selectedFile || isSubmitting) return;
+    if (selectedCover && exceedsUploadLimit(selectedFile.size + selectedCover.size)) return;
     const controller = beginRequest();
     if (!controller) return;
     showProcessing(true);
@@ -477,6 +593,7 @@
 
     try {
       const res = await fetch(endpoint, { method: "POST", body: formData, signal: controller.signal });
+      if (res.status === 413) { showError(PAYLOAD_LIMIT_MESSAGE); return; }
       const data = await parseApiResponse(res, "排版处理失败，请稍后重试。");
       if (!res.ok || !data.success) { showError(data.error || "排版处理失败"); return; }
       completeSteps(); scheduleResult(data);
@@ -488,6 +605,7 @@
 
   async function uploadAndFormat() {
     if (!selectedFile || isSubmitting) return;
+    if (selectedCover && exceedsUploadLimit(selectedFile.size + selectedCover.size)) return;
     if (typeof EventSource === "undefined") return uploadAndFormatLegacy();
 
     const controller = beginRequest();
@@ -573,9 +691,68 @@
     }
   }
 
+  // ====== 拼接文档（保持各自排版，合并为一个文件） ======
+  async function submitConcatLegacy() {
+    if (!selectedConcatFirst || !selectedConcatSecond || isSubmitting) return;
+    if (exceedsUploadLimit(selectedConcatFirst.size + selectedConcatSecond.size)) return;
+    currentMode = "concat";
+    const controller = beginRequest();
+    if (!controller) return;
+    showProcessing(true);
+
+    const formData = new FormData();
+    formData.append("first", selectedConcatFirst);
+    formData.append("second", selectedConcatSecond);
+    formData.append("restart_page_number", concatRestartPage && concatRestartPage.checked ? "1" : "0");
+
+    try {
+      const res = await fetch("/api/concat", { method: "POST", body: formData, signal: controller.signal });
+      if (res.status === 413) { showError(PAYLOAD_LIMIT_MESSAGE); return; }
+      const data = await parseApiResponse(res, "文档拼接失败，请稍后重试。");
+      if (!res.ok || !data.success) { showError(data.error || "文档拼接失败"); return; }
+      completeSteps(); scheduleResult(data);
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+      showError("网络连接失败，请检查网络后重试。");
+    } finally { finishRequest(controller); }
+  }
+
+  async function submitConcat() {
+    if (!selectedConcatFirst || !selectedConcatSecond) { showError("请先分别选择两个 .docx 文档"); return; }
+    if (isSubmitting) return;
+    if (exceedsUploadLimit(selectedConcatFirst.size + selectedConcatSecond.size)) return;
+    currentMode = "concat";
+    if (typeof EventSource === "undefined") return submitConcatLegacy();
+
+    const controller = beginRequest();
+    if (!controller) return;
+    showProcessing();
+
+    const formData = new FormData();
+    formData.append("first", selectedConcatFirst);
+    formData.append("second", selectedConcatSecond);
+    formData.append("restart_page_number", concatRestartPage && concatRestartPage.checked ? "1" : "0");
+
+    let handedOff = false;
+    try {
+      handedOff = await startAsyncJob(
+        "/api/concat_async",
+        { method: "POST", body: formData, signal: controller.signal },
+        controller,
+        "拼接任务创建失败，请稍后重试。"
+      );
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+      showError("网络连接失败，请检查网络后重试。");
+    } finally {
+      if (!handedOff) finishRequest(controller);
+    }
+  }
+
   // ====== 事件绑定 ======
   tabUpload.addEventListener("click", showUpload);
   tabPaste.addEventListener("click", showPaste);
+  if (tabConcat) tabConcat.addEventListener("click", showConcat);
   btnFormatText.addEventListener("click", submitPastedText);
   uploadZone.addEventListener("click", () => { if (!isSubmitting) fileInput.click(); });
   fileInput.addEventListener("change", (e) => { if (e.target.files.length > 0) selectFile(e.target.files[0]); });
@@ -596,6 +773,19 @@
     if (input) input.addEventListener("input", updateFormatButton);
   });
 
+  // 拼接文档事件
+  if (btnConcat) btnConcat.addEventListener("click", submitConcat);
+  [["first", concatZoneFirst, concatFirstInput, concatFirstRemove], ["second", concatZoneSecond, concatSecondInput, concatSecondRemove]].forEach(([slot, zone, input, removeBtn]) => {
+    if (zone && input) {
+      zone.addEventListener("click", () => { if (!isSubmitting) input.click(); });
+      zone.addEventListener("dragover", (e) => { e.preventDefault(); if (!isSubmitting) zone.classList.add("drag-over"); });
+      zone.addEventListener("dragleave", (e) => { e.preventDefault(); zone.classList.remove("drag-over"); });
+      zone.addEventListener("drop", (e) => { e.preventDefault(); zone.classList.remove("drag-over"); if (!isSubmitting && e.dataTransfer.files.length > 0) selectConcatFile(slot, e.dataTransfer.files[0]); });
+      input.addEventListener("change", (e) => { if (e.target.files.length > 0) selectConcatFile(slot, e.target.files[0]); });
+    }
+    if (removeBtn) removeBtn.addEventListener("click", () => removeConcatFile(slot));
+  });
+
   btnDownload.addEventListener("click", () => {
     if (downloadUrl) { const a = document.createElement("a"); a.href = downloadUrl; a.download = downloadName; document.body.appendChild(a); a.click(); a.remove(); }
   });
@@ -610,5 +800,5 @@
     }
   });
 
-  syncBusyState(); updateRetryLabel(); updateFormatButton(); toggleCoverMetaPanel(); initParticles(); initSignatureTyping();
+  syncBusyState(); updateRetryLabel(); updateFormatButton(); updateConcatButton(); toggleCoverMetaPanel(); initParticles(); initSignatureTyping();
 })();

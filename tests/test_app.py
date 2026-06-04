@@ -264,6 +264,65 @@ class AppRoutesTestCase(unittest.TestCase):
         self.assertEqual(result_data["format_summary"]["page_setup"]["page_size"], "A4")
         self.assertIn("preview", result_data)
 
+    def test_format_rejects_corrupt_docx_content(self):
+        response = self.client.post(
+            "/api/format",
+            data={"file": (BytesIO(b"PK not really a docx"), "改了后缀.docx")},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        data = response.get_json()
+        self.assertFalse(data["success"])
+        self.assertIn("重新导出", data["error"])
+        # 损坏文件在校验阶段被拦截，不应残留上传或输出文件
+        self.assertEqual(list(self.upload_dir.glob("*.docx")), [])
+        self.assertEqual(list(self.output_dir.glob("*_output.docx")), [])
+
+    def test_format_merge_combines_cover_and_body(self):
+        response = self.client.post(
+            "/api/format_merge",
+            data={
+                "cover": (BytesIO(self.test_doc_bytes), "封面.docx"),
+                "body": (BytesIO(self.test_doc_bytes), "论文正文.docx"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["download_name"], "论文正文_合并排版后.docx")
+        # 合并接口会附带 format_result 别名
+        self.assertIn("format_result", data)
+        self.assertEqual(len(list(self.output_dir.glob("*_output.docx"))), 1)
+        self.assertEqual(list(self.upload_dir.glob("*.docx")), [])
+
+    def test_format_merge_async_streams_progress_and_exposes_result(self):
+        start_response = self.client.post(
+            "/api/format_merge_async",
+            data={
+                "cover": (BytesIO(self.test_doc_bytes), "封面.docx"),
+                "body": (BytesIO(self.test_doc_bytes), "论文正文.docx"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(start_response.status_code, 202)
+        start_data = start_response.get_json()
+        self.assertTrue(start_data["success"])
+
+        events_response = self.client.get(start_data["events_url"], buffered=True)
+        events_text = events_response.get_data(as_text=True)
+        self.assertEqual(events_response.status_code, 200)
+        self.assertIn("event: complete", events_text)
+
+        result_response = self.client.get(start_data["result_url"])
+        result_data = result_response.get_json()
+        self.assertEqual(result_response.status_code, 200)
+        self.assertTrue(result_data["success"])
+        self.assertEqual(result_data["download_name"], "论文正文_合并排版后.docx")
+
     def test_format_text_async_streams_progress_and_exposes_result(self):
         start_response = self.client.post(
             "/api/format_text_async",
@@ -295,6 +354,119 @@ class AppRoutesTestCase(unittest.TestCase):
         self.assertEqual(result_response.status_code, 200)
         self.assertTrue(result_data["success"])
         self.assertEqual(result_data["format_summary"]["stats"]["heading_l2"], 1)
+
+    def test_concat_merges_two_documents_into_one(self):
+        response = self.client.post(
+            "/api/concat",
+            data={
+                "first": (BytesIO(self.test_doc_bytes), "封面.docx"),
+                "second": (BytesIO(self.test_doc_bytes), "我的论文正文.docx"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertTrue(data["success"])
+        # 下载名以第二个（正文）文档为基准
+        self.assertEqual(data["download_name"], "我的论文正文_拼接后.docx")
+        # 预览说明拼接动作，且不包含排版结构大纲
+        self.assertEqual(data["preview"]["outline"], [])
+        self.assertTrue(any("原样保留" in h["eyebrow"] for h in data["preview"]["highlights"]))
+        # 输出文件已生成，且上传临时文件已清理
+        self.assertEqual(len(list(self.output_dir.glob("*_output.docx"))), 1)
+        self.assertEqual(list(self.upload_dir.glob("*.docx")), [])
+        # 默认会把封面排除在页码之外、正文从第 1 页重新编号
+        self.assertTrue(any("页码衔接" in h["eyebrow"] for h in data["preview"]["highlights"]))
+
+    def test_concat_can_keep_original_page_numbers_when_disabled(self):
+        response = self.client.post(
+            "/api/concat",
+            data={
+                "first": (BytesIO(self.test_doc_bytes), "封面.docx"),
+                "second": (BytesIO(self.test_doc_bytes), "正文.docx"),
+                "restart_page_number": "0",
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertTrue(data["success"])
+        # 关闭重排时，预览说明不再出现“页码衔接”，而是“分页衔接”
+        self.assertTrue(any("分页衔接" in h["eyebrow"] for h in data["preview"]["highlights"]))
+        self.assertFalse(any("页码衔接" in h["eyebrow"] for h in data["preview"]["highlights"]))
+
+    def test_concat_rejects_missing_second_document(self):
+        response = self.client.post(
+            "/api/concat",
+            data={"first": (BytesIO(self.test_doc_bytes), "封面.docx")},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        data = response.get_json()
+        self.assertFalse(data["success"])
+        self.assertIn("第二个文档", data["error"])
+
+    def test_concat_reports_invalid_docx_clearly(self):
+        response = self.client.post(
+            "/api/concat",
+            data={
+                "first": (BytesIO(self.test_doc_bytes), "封面.docx"),
+                "second": (BytesIO(b"not a real docx payload"), "损坏.docx"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        data = response.get_json()
+        self.assertFalse(data["success"])
+        self.assertIn("重新导出", data["error"])
+        # 失败时不应残留输出文件
+        self.assertEqual(list(self.output_dir.glob("*_output.docx")), [])
+
+    def test_concat_rejects_non_docx_document(self):
+        response = self.client.post(
+            "/api/concat",
+            data={
+                "first": (BytesIO(self.test_doc_bytes), "封面.docx"),
+                "second": (BytesIO(b"not a docx"), "正文.txt"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        data = response.get_json()
+        self.assertFalse(data["success"])
+        self.assertIn(".docx", data["error"])
+
+    def test_concat_async_streams_progress_and_exposes_result(self):
+        start_response = self.client.post(
+            "/api/concat_async",
+            data={
+                "first": (BytesIO(self.test_doc_bytes), "封面.docx"),
+                "second": (BytesIO(self.test_doc_bytes), "正文.docx"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(start_response.status_code, 202)
+        start_data = start_response.get_json()
+        self.assertTrue(start_data["success"])
+
+        events_response = self.client.get(start_data["events_url"], buffered=True)
+        events_text = events_response.get_data(as_text=True)
+        self.assertEqual(events_response.status_code, 200)
+        self.assertIn("event: progress", events_text)
+        self.assertIn("event: complete", events_text)
+        self.assertIn("正在把封面拼接到正文之前", events_text)
+
+        result_response = self.client.get(start_data["result_url"])
+        result_data = result_response.get_json()
+        self.assertEqual(result_response.status_code, 200)
+        self.assertTrue(result_data["success"])
+        self.assertEqual(result_data["download_name"], "正文_拼接后.docx")
 
 
 if __name__ == "__main__":

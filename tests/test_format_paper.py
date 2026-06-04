@@ -7,19 +7,22 @@ from zipfile import ZipFile
 from docx import Document
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml import parse_xml
+from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 from docx.oxml.ns import nsdecls
-from docx.shared import Inches
+from docx.shared import Cm, Inches
 from lxml import etree
 
 from format_paper import (
     apply_document_layout,
+    concatenate_documents,
+    DocumentConcatError,
     ensure_document_ends_with_page_break,
     find_title_paragraph_index,
     format_academic_paper,
     format_academic_paper_from_text,
     generate_cover_page,
+    merge_cover_and_body,
     split_text_to_paragraphs,
 )
 
@@ -885,6 +888,167 @@ class FormatPaperFromTextTestCase(unittest.TestCase):
 
         self.assertTrue(doc.paragraphs)
         self.assertIn('w:type="page"', doc.paragraphs[-1]._element.xml)
+
+    def test_concatenate_documents_preserves_body_and_restarts_page_number(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            first_path = tmp / "cover.docx"     # 封面
+            second_path = tmp / "body.docx"     # 已排版好的正文
+            output_path = tmp / "merged.docx"
+
+            cover = Document()
+            cover_run = cover.add_paragraph().add_run("论文封面标题")
+            cover_run.font.name = "华文行楷"
+            cover.save(str(first_path))
+
+            body = Document()
+            body_section = body.sections[0]
+            body_section.left_margin = Cm(1.5)
+            body.add_paragraph("第一段正文内容")
+            body.add_paragraph("第二段正文内容")
+            footer_run = body_section.footer.paragraphs[0].add_run()
+            page_field = OxmlElement("w:fldSimple")
+            page_field.set(qn("w:instr"), "PAGE")
+            footer_run._r.addprevious(page_field)
+            body.save(str(second_path))
+
+            result = concatenate_documents(str(first_path), str(second_path), str(output_path))
+
+            self.assertIsInstance(result, dict)
+            self.assertTrue(result["concatenated"])
+            self.assertTrue(result["page_number_restarted"])
+            self.assertTrue(output_path.exists())
+
+            merged = Document(str(output_path))
+            merged_texts = [p.text for p in merged.paragraphs]
+            # 封面在前、正文在后，两份内容都完整保留
+            self.assertIn("论文封面标题", merged_texts)
+            self.assertIn("第一段正文内容", merged_texts)
+            self.assertIn("第二段正文内容", merged_texts)
+            self.assertLess(
+                merged_texts.index("论文封面标题"),
+                merged_texts.index("第一段正文内容"),
+            )
+            # 封面原有字体形态未被改写
+            cover_idx = merged_texts.index("论文封面标题")
+            self.assertEqual(merged.paragraphs[cover_idx].runs[0].font.name, "华文行楷")
+
+            # 合并后分为两节：封面一节、正文一节
+            self.assertEqual(len(merged.sections), 2)
+            cover_section, body_first_section = merged.sections[0], merged.sections[1]
+            # 正文原有页边距与页码字段完整保留
+            self.assertAlmostEqual(body_first_section.left_margin.cm, 1.5, places=1)
+            self.assertIn("PAGE", body_first_section.footer.paragraphs[0]._p.xml)
+            # 正文页码从第 1 页重新编号
+            pg_num_type = body_first_section._sectPr.find(qn("w:pgNumType"))
+            self.assertIsNotNone(pg_num_type)
+            self.assertEqual(pg_num_type.get(qn("w:start")), "1")
+            # 封面不计入页码：去掉了页脚引用
+            self.assertEqual(len(cover_section._sectPr.findall(qn("w:footerReference"))), 0)
+
+    def test_concatenate_documents_trims_cover_trailing_blank_paragraphs(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            first_path = tmp / "cover.docx"
+            second_path = tmp / "body.docx"
+            output_path = tmp / "merged.docx"
+
+            cover = Document()
+            cover.add_paragraph("封面标题")
+            for _ in range(4):
+                cover.add_paragraph("")  # 尾部多余空段落
+            cover.save(str(first_path))
+
+            body = Document()
+            body.add_paragraph("正文内容")
+            body.save(str(second_path))
+
+            result = concatenate_documents(str(first_path), str(second_path), str(output_path))
+            self.assertTrue(result["concatenated"])
+
+            merged_texts = [p.text for p in Document(str(output_path)).paragraphs]
+            cover_idx = merged_texts.index("封面标题")
+            body_idx = merged_texts.index("正文内容")
+            # 封面与正文之间的空段落已被清理（仅余分节符产生的至多 1 个空段）
+            gap_blanks = sum(1 for t in merged_texts[cover_idx + 1:body_idx] if not t.strip())
+            self.assertLessEqual(gap_blanks, 1)
+
+    def test_merge_cover_and_body_keeps_cover_and_formats_body(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            cover_path = tmp / "cover.docx"
+            body_path = tmp / "body.docx"
+            output_path = tmp / "merged.docx"
+
+            cover = Document()
+            cover.add_paragraph("课程论文封面")
+            cover.save(str(cover_path))
+
+            body = Document()
+            body.add_paragraph("基于多元回归模型的城市化研究")
+            body.add_paragraph("摘要：本文研究城市化进程。")
+            body.add_paragraph("关键词：城市化 回归")
+            body.add_paragraph("1 引言")
+            body.add_paragraph("这是正文内容。")
+            body.save(str(body_path))
+
+            result = merge_cover_and_body(str(cover_path), str(body_path), str(output_path))
+
+            self.assertTrue(result)
+            self.assertTrue(output_path.exists())
+
+            merged_texts = [p.text for p in Document(str(output_path)).paragraphs]
+            # 封面原样保留
+            self.assertIn("课程论文封面", merged_texts)
+            # 正文内容（经排版）仍在
+            self.assertTrue(any("引言" in t for t in merged_texts))
+            self.assertTrue(any("城市化研究" in t for t in merged_texts))
+
+    def test_concatenate_documents_raises_for_invalid_docx(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            first_path = tmp / "cover.docx"
+            second_path = tmp / "broken.docx"
+            output_path = tmp / "merged.docx"
+
+            Document().save(str(first_path))
+            second_path.write_bytes(b"this is not a docx zip")
+
+            with self.assertRaises(DocumentConcatError):
+                concatenate_documents(str(first_path), str(second_path), str(output_path))
+
+    def test_concatenate_documents_can_keep_original_page_numbers(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            first_path = tmp / "cover.docx"
+            second_path = tmp / "body.docx"
+            output_path = tmp / "merged.docx"
+
+            Document().save(str(first_path))
+            body = Document()
+            body.add_paragraph("正文内容")
+            body.save(str(second_path))
+
+            result = concatenate_documents(
+                str(first_path), str(second_path), str(output_path),
+                restart_body_page_number=False,
+            )
+
+            self.assertTrue(result["concatenated"])
+            self.assertFalse(result["page_number_restarted"])
+            self.assertTrue(output_path.exists())
+
+    def test_concatenate_documents_returns_false_for_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            existing = tmp / "exists.docx"
+            Document().save(str(existing))
+
+            result = concatenate_documents(
+                str(existing), str(tmp / "missing.docx"), str(tmp / "out.docx")
+            )
+
+            self.assertFalse(result)
 
 
 if __name__ == "__main__":

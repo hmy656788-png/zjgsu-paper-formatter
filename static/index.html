@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Inter:wght@300;400;500;600;700;800&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css?v=20260330_2" />
+  <link rel="stylesheet" href="/static/style.css?v=20260529_5" />
 </head>
 <body>
   <!-- ====== 动态背景粒子 ====== -->
@@ -36,6 +36,7 @@
       <div class="input-tabs">
         <button class="tab-btn active" id="tabUpload">上传文件</button>
         <button class="tab-btn" id="tabPaste">黏贴文字</button>
+        <button class="tab-btn" id="tabConcat">拼接文档</button>
       </div>
 
       <!-- ====== 黏贴区域 ====== -->
@@ -163,12 +164,73 @@
         </button>
       </section>
 
+      <!-- ====== 拼接文档区域 ====== -->
+      <section class="concat-section hidden" id="concatSection">
+        <div class="concat-grid">
+          <div class="concat-slot">
+            <span class="concat-slot-tag">第一个文档 · 排在前</span>
+            <div class="concat-zone" id="concatZoneFirst">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <p class="concat-zone-title">选择第一个文档</p>
+              <p class="concat-zone-hint">例如：封面 · 点击或拖拽 .docx</p>
+              <input type="file" id="concatFirstInput" accept=".docx" hidden />
+            </div>
+            <div class="concat-file hidden" id="concatFirstCard">
+              <div class="concat-file-info">
+                <span class="concat-file-tag">封面</span>
+                <p class="concat-file-name" id="concatFirstName"></p>
+                <p class="concat-file-size" id="concatFirstSize"></p>
+              </div>
+              <button class="concat-file-remove" id="concatFirstRemove" title="移除文档">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="concat-joint" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </div>
+
+          <div class="concat-slot">
+            <span class="concat-slot-tag">第二个文档 · 排在后</span>
+            <div class="concat-zone" id="concatZoneSecond">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <p class="concat-zone-title">选择第二个文档</p>
+              <p class="concat-zone-hint">例如：已排版好的正文 · .docx</p>
+              <input type="file" id="concatSecondInput" accept=".docx" hidden />
+            </div>
+            <div class="concat-file hidden" id="concatSecondCard">
+              <div class="concat-file-info">
+                <span class="concat-file-tag">正文</span>
+                <p class="concat-file-name" id="concatSecondName"></p>
+                <p class="concat-file-size" id="concatSecondSize"></p>
+              </div>
+              <button class="concat-file-remove" id="concatSecondRemove" title="移除文档">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <p class="concat-tip">两个文档将<strong>原样保留各自排版</strong>，第二个文档接在第一个文档之后并自动从新的一页开始。适合把封面与已排版好的正文合并为一个文件，避免手动拼接造成乱码。</p>
+
+        <label class="concat-option" for="concatRestartPage">
+          <input type="checkbox" id="concatRestartPage" checked />
+          <span>封面不计入页码，正文从第 1 页重新编号</span>
+        </label>
+
+        <button class="btn-format" id="btnConcat" disabled>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/></svg>
+          <span>拼接为一个文档</span>
+        </button>
+      </section>
+
       <!-- ====== 进度指示（处理中显示） ====== -->
       <section class="processing-section hidden" id="processingSection">
         <div class="processing-card">
           <div class="spinner"></div>
-          <h3 class="processing-title">正在排版中...</h3>
-          <p class="processing-hint">智能识别论文结构，应用浙工商学术排版规范</p>
+          <h3 class="processing-title" id="processingTitle">正在排版中...</h3>
+          <p class="processing-hint" id="processingHint">智能识别论文结构，应用浙工商学术排版规范</p>
           <p class="processing-live" id="processingLive">正在准备任务...</p>
           <div class="processing-steps">
             <div class="step active" id="step1">
@@ -200,7 +262,7 @@
               <polyline points="22 4 12 14.01 9 11.01"/>
             </svg>
           </div>
-          <h3 class="result-title">排版完成！</h3>
+          <h3 class="result-title" id="resultTitle">排版完成！</h3>
 
           <div class="result-stats" id="resultStats">
             <div class="stat-item">
@@ -221,12 +283,12 @@
             <div class="preview-panel">
               <div class="preview-panel-head">
                 <h4 class="preview-title">这次自动完成了什么</h4>
-                <p class="preview-subtitle">把真正做过的页面设置、页眉页码和结构识别结果直接展示出来</p>
+                <p class="preview-subtitle" id="highlightsSubtitle">把真正做过的页面设置、页眉页码和结构识别结果直接展示出来</p>
               </div>
               <div class="preview-highlights" id="previewHighlights"></div>
             </div>
 
-            <div class="preview-panel">
+            <div class="preview-panel" id="outlinePanel">
               <div class="preview-panel-head">
                 <h4 class="preview-title">识别到的文档结构</h4>
                 <p class="preview-subtitle">从标题层级到参考文献，快速确认工具有没有识别正确</p>
@@ -241,7 +303,7 @@
               <polyline points="7 10 12 15 17 10"/>
               <line x1="12" y1="15" x2="12" y2="3"/>
             </svg>
-            下载排版文档
+            <span id="btnDownloadLabel">下载排版文档</span>
           </button>
 
           <button class="btn-reset" id="btnReset">
@@ -249,7 +311,7 @@
               <polyline points="1 4 1 10 7 10"/>
               <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
             </svg>
-            继续排版其他文档
+            <span id="btnResetLabel">继续排版其他文档</span>
           </button>
         </div>
       </section>
@@ -326,6 +388,6 @@
 
   </div>
 
-  <script src="/static/script.js?v=20260330_2"></script>
+  <script src="/static/script.js?v=20260529_7"></script>
 </body>
 </html>

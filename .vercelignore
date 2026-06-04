@@ -1,0 +1,19 @@
+# 仅部署应用本身：排除虚拟环境、其它项目、缓存与本地产物
+.venv/
+.venv-workers/
+venv/
+bookskills-demo/
+__pycache__/
+*.pyc
+.git/
+.github/
+.claude/
+.vscode/
+node_modules/
+.DS_Store
+outputs/
+uploads/
+tests/
+Procfile
+render.yaml
+DEPLOY.md

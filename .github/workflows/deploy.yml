@@ -1,0 +1,19 @@
+name: Deploy to Render
+
+# push 到 main 即触发 Render 部署（通过 Deploy Hook）。
+# 背景：本服务是按「公开仓库 URL」创建的，Render 拿不到 GitHub webhook，
+# 自动部署不生效；push 触发的 GitHub Actions 是即时可靠的（不同于会被降频的 schedule），
+# 用它调用 Deploy Hook 实现真正的「push = 自动上线」。
+# Hook 存放在仓库加密 Secret RENDER_DEPLOY_HOOK 中（如需轮换，去 Render 控制台
+# Settings → Deploy Hook 重新生成，并用 `gh secret set RENDER_DEPLOY_HOOK` 更新）。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy
+        run: curl -fsS "${{ secrets.RENDER_DEPLOY_HOOK }}" > /dev/null && echo "deploy triggered"

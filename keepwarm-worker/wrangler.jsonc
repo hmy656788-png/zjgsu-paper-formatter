@@ -1,0 +1,10 @@
+// Cloudflare Worker：每 5 分钟 ping 一次 Render，防止免费档休眠（替代不守时的 GitHub Actions 计划任务）。
+// 部署：cd keepwarm-worker && npx wrangler deploy
+{
+  "name": "zjgsu-keepwarm",
+  "main": "index.js",
+  "compatibility_date": "2026-06-01",
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  }
+}

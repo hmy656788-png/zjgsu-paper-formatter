@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>浙江工商大学 · 学术论文自动排版工具</title>
   <meta name="description" content="浙江工商大学学术论文自动排版工具。一键将未排版的 Word 论文转换为符合浙工商学术规范的格式文档。" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Inter:wght@300;400;500;600;700;800&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css?v=20260529_5" />
+  <meta name="theme-color" content="#080c14" />
+  <link rel="icon" href="/static/logo.png" type="image/png" />
+  <link rel="apple-touch-icon" href="/static/logo.png" />
+  <link rel="stylesheet" href="/static/style.css?v=20260907_1" />
 </head>
 <body>
   <!-- ====== 动态背景粒子 ====== -->
@@ -33,16 +33,18 @@
     <main class="main-content">
 
       <!-- ====== 输入模式切换 ====== -->
-      <div class="input-tabs">
-        <button class="tab-btn active" id="tabUpload">上传文件</button>
-        <button class="tab-btn" id="tabPaste">黏贴文字</button>
-        <button class="tab-btn" id="tabConcat">拼接文档</button>
+      <div class="input-tabs" role="group" aria-label="选择处理方式">
+        <button class="tab-btn active" id="tabUpload" type="button" aria-pressed="true" aria-controls="uploadSection filePreview">上传文件</button>
+        <button class="tab-btn" id="tabPaste" type="button" aria-pressed="false" aria-controls="pasteSection">粘贴文字</button>
+        <button class="tab-btn" id="tabConcat" type="button" aria-pressed="false" aria-controls="concatSection">拼接文档</button>
       </div>
+      <p class="concat-feature-hint hidden" id="concatFeatureNotice" role="status" aria-live="polite"></p>
+      <p class="sr-only" id="fileSelectionStatus" role="status" aria-live="polite" aria-atomic="true"></p>
 
-      <!-- ====== 黏贴区域 ====== -->
-      <section class="paste-section hidden" id="pasteSection">
-        <textarea id="pasteArea" class="paste-area" placeholder="请在此处黏贴未排版的论文文本内容..."></textarea>
-        <button class="btn-format" id="btnFormatText">
+      <!-- ====== 粘贴区域 ====== -->
+      <section class="paste-section hidden" id="pasteSection" aria-labelledby="tabPaste">
+        <textarea id="pasteArea" class="paste-area" aria-label="论文文本内容" placeholder="请在此处粘贴未排版的论文文本内容..."></textarea>
+        <button class="btn-format" id="btnFormatText" type="button">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="4 7 4 4 20 4 20 7"/>
             <line x1="9" y1="20" x2="15" y2="20"/>
@@ -54,8 +56,8 @@
 
 
       <!-- ====== 上传区域 ====== -->
-      <section class="upload-section" id="uploadSection">
-        <div class="upload-zone" id="uploadZone">
+      <section class="upload-section" id="uploadSection" aria-labelledby="tabUpload">
+        <div class="upload-zone" id="uploadZone" role="button" tabindex="0" aria-controls="fileInput" aria-describedby="uploadFormat" aria-label="选择待排版 Word 文档">
           <div class="upload-icon">
             <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -71,14 +73,14 @@
             <span class="desktop-copy">点击此区域选择文件，或按 Ctrl+V 粘贴文件</span>
             <span class="mobile-copy">支持从微信、QQ、文件 App 中选择 .docx 文档</span>
           </p>
-          <p class="upload-format">支持格式：<strong>.docx</strong> · 最大 50MB</p>
+          <p class="upload-format" id="uploadFormat">支持格式：<strong>.docx</strong> · 建议不超过 48MB（服务器上限 50MB）</p>
           <input type="file" id="fileInput" accept=".docx" hidden />
         </div>
       </section>
 
       <!-- ====== 文件预览（上传后显示） ====== -->
-      <section class="file-preview hidden" id="filePreview">
-        <div class="file-card">
+      <section class="file-preview hidden" id="filePreview" aria-labelledby="tabUpload">
+        <div class="file-card" id="fileCard" role="group" tabindex="-1" aria-labelledby="fileName" aria-describedby="fileSize">
           <div class="file-icon-wrapper">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
@@ -89,7 +91,7 @@
             <p class="file-name" id="fileName">document.docx</p>
             <p class="file-size" id="fileSize">1.2 MB</p>
           </div>
-          <button class="file-remove" id="fileRemove" title="移除文件">
+          <button class="file-remove" id="fileRemove" type="button" title="移除文件" aria-label="移除待排版文档">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"/>
               <line x1="6" y1="6" x2="18" y2="18"/>
@@ -99,24 +101,24 @@
 
         <!-- 封面文档（可选） -->
         <div class="cover-option" id="coverOption">
-          <div class="cover-zone" id="coverZone">
+            <div class="cover-zone" id="coverZone" role="button" tabindex="0" aria-controls="coverInput" aria-label="选择封面 Word 文档">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             <span>添加封面文档（可选）</span>
             <input type="file" id="coverInput" accept=".docx" hidden />
           </div>
-          <div class="cover-file hidden" id="coverFileCard">
+          <div class="cover-file hidden" id="coverFileCard" role="group" tabindex="-1" aria-labelledby="coverFileName" aria-describedby="coverFileSize">
             <div class="cover-file-info">
               <span class="cover-file-tag">封面</span>
               <p class="cover-file-name" id="coverFileName"></p>
               <p class="cover-file-size" id="coverFileSize"></p>
             </div>
-            <button class="cover-file-remove" id="coverFileRemove" title="移除封面">
+            <button class="cover-file-remove" id="coverFileRemove" type="button" title="移除封面" aria-label="移除封面文档">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
           </div>
         </div>
 
-        <div class="cover-builder">
+        <div class="cover-builder" id="coverBuilder">
           <label class="cover-builder-toggle" for="coverMetaEnabled">
             <input type="checkbox" id="coverMetaEnabled" />
             <span>自动生成模板封面</span>
@@ -154,7 +156,7 @@
           </div>
         </div>
 
-        <button class="btn-format" id="btnFormat">
+        <button class="btn-format" id="btnFormat" type="button">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="4 7 4 4 20 4 20 7"/>
             <line x1="9" y1="20" x2="15" y2="20"/>
@@ -165,23 +167,23 @@
       </section>
 
       <!-- ====== 拼接文档区域 ====== -->
-      <section class="concat-section hidden" id="concatSection">
+      <section class="concat-section hidden" id="concatSection" aria-labelledby="tabConcat">
         <div class="concat-grid">
           <div class="concat-slot">
             <span class="concat-slot-tag">第一个文档 · 排在前</span>
-            <div class="concat-zone" id="concatZoneFirst">
+            <div class="concat-zone" id="concatZoneFirst" role="button" tabindex="0" aria-controls="concatFirstInput" aria-label="选择排在前面的 Word 文档">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
               <p class="concat-zone-title">选择第一个文档</p>
               <p class="concat-zone-hint">例如：封面 · 点击或拖拽 .docx</p>
               <input type="file" id="concatFirstInput" accept=".docx" hidden />
             </div>
-            <div class="concat-file hidden" id="concatFirstCard">
+            <div class="concat-file hidden" id="concatFirstCard" role="group" tabindex="-1" aria-labelledby="concatFirstName" aria-describedby="concatFirstSize">
               <div class="concat-file-info">
                 <span class="concat-file-tag">封面</span>
                 <p class="concat-file-name" id="concatFirstName"></p>
                 <p class="concat-file-size" id="concatFirstSize"></p>
               </div>
-              <button class="concat-file-remove" id="concatFirstRemove" title="移除文档">
+              <button class="concat-file-remove" id="concatFirstRemove" type="button" title="移除文档" aria-label="移除排在前面的文档">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>
@@ -193,19 +195,19 @@
 
           <div class="concat-slot">
             <span class="concat-slot-tag">第二个文档 · 排在后</span>
-            <div class="concat-zone" id="concatZoneSecond">
+            <div class="concat-zone" id="concatZoneSecond" role="button" tabindex="0" aria-controls="concatSecondInput" aria-label="选择排在后面的 Word 文档">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
               <p class="concat-zone-title">选择第二个文档</p>
               <p class="concat-zone-hint">例如：已排版好的正文 · .docx</p>
               <input type="file" id="concatSecondInput" accept=".docx" hidden />
             </div>
-            <div class="concat-file hidden" id="concatSecondCard">
+            <div class="concat-file hidden" id="concatSecondCard" role="group" tabindex="-1" aria-labelledby="concatSecondName" aria-describedby="concatSecondSize">
               <div class="concat-file-info">
                 <span class="concat-file-tag">正文</span>
                 <p class="concat-file-name" id="concatSecondName"></p>
                 <p class="concat-file-size" id="concatSecondSize"></p>
               </div>
-              <button class="concat-file-remove" id="concatSecondRemove" title="移除文档">
+              <button class="concat-file-remove" id="concatSecondRemove" type="button" title="移除文档" aria-label="移除排在后面的文档">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>
@@ -219,42 +221,57 @@
           <span>封面不计入页码，正文从第 1 页重新编号</span>
         </label>
 
-        <button class="btn-format" id="btnConcat" disabled>
+        <button class="btn-format" id="btnConcat" type="button" disabled>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/></svg>
           <span>拼接为一个文档</span>
         </button>
       </section>
 
       <!-- ====== 进度指示（处理中显示） ====== -->
-      <section class="processing-section hidden" id="processingSection">
+      <section class="processing-section hidden" id="processingSection" tabindex="-1" aria-busy="false" aria-labelledby="processingTitle" aria-describedby="processingHint processingLive">
         <div class="processing-card">
-          <div class="spinner"></div>
-          <h3 class="processing-title" id="processingTitle">正在排版中...</h3>
+          <div class="spinner" aria-hidden="true"></div>
+          <h2 class="processing-title" id="processingTitle">正在排版中...</h2>
           <p class="processing-hint" id="processingHint">智能识别论文结构，应用浙工商学术排版规范</p>
-          <p class="processing-live" id="processingLive">正在准备任务...</p>
-          <div class="processing-steps">
-            <div class="step active" id="step1">
-              <div class="step-dot"></div>
-              <span>解析文档结构</span>
+          <p class="processing-live" id="processingLive" role="status" aria-live="polite" aria-atomic="true">正在准备任务...</p>
+          <div class="processing-steps" role="list" aria-label="处理进度">
+            <div class="step active" id="step1" role="listitem" aria-current="step">
+              <div class="step-dot" aria-hidden="true"></div>
+              <span class="step-label">解析文档结构</span>
+              <span class="step-status">进行中</span>
             </div>
-            <div class="step" id="step2">
-              <div class="step-dot"></div>
-              <span>识别标题层级</span>
+            <div class="step" id="step2" role="listitem">
+              <div class="step-dot" aria-hidden="true"></div>
+              <span class="step-label">识别标题层级</span>
+              <span class="step-status">未开始</span>
             </div>
-            <div class="step" id="step3">
-              <div class="step-dot"></div>
-              <span>应用排版规则</span>
+            <div class="step" id="step3" role="listitem">
+              <div class="step-dot" aria-hidden="true"></div>
+              <span class="step-label">应用排版规则</span>
+              <span class="step-status">未开始</span>
             </div>
-            <div class="step" id="step4">
-              <div class="step-dot"></div>
-              <span>生成输出文档</span>
+            <div class="step" id="step4" role="listitem">
+              <div class="step-dot" aria-hidden="true"></div>
+              <span class="step-label">生成输出文档</span>
+              <span class="step-status">未开始</span>
             </div>
+          </div>
+          <div class="processing-actions">
+            <button class="btn-reset processing-cancel" id="btnCancelRequest" type="button" disabled>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <circle cx="12" cy="12" r="9"/>
+                <line x1="9" y1="9" x2="15" y2="15"/>
+                <line x1="15" y1="9" x2="9" y2="15"/>
+              </svg>
+              <span>停止等待</span>
+            </button>
+            <p class="processing-cancel-note">仅停止当前页面等待；已创建的服务器任务可能继续完成。</p>
           </div>
         </div>
       </section>
 
       <!-- ====== 结果区域（排版完成后显示） ====== -->
-      <section class="result-section hidden" id="resultSection">
+      <section class="result-section hidden" id="resultSection" tabindex="-1" aria-labelledby="resultTitle">
         <div class="result-card">
           <div class="result-icon">
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -262,7 +279,7 @@
               <polyline points="22 4 12 14.01 9 11.01"/>
             </svg>
           </div>
-          <h3 class="result-title" id="resultTitle">排版完成！</h3>
+          <h2 class="result-title" id="resultTitle">排版完成！</h2>
 
           <div class="result-stats" id="resultStats">
             <div class="stat-item">
@@ -297,7 +314,7 @@
             </div>
           </div>
 
-          <button class="btn-download" id="btnDownload">
+          <button class="btn-download" id="btnDownload" type="button" disabled>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
               <polyline points="7 10 12 15 17 10"/>
@@ -306,7 +323,7 @@
             <span id="btnDownloadLabel">下载排版文档</span>
           </button>
 
-          <button class="btn-reset" id="btnReset">
+          <button class="btn-reset" id="btnReset" type="button">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="1 4 1 10 7 10"/>
               <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
@@ -317,7 +334,7 @@
       </section>
 
       <!-- ====== 错误提示 ====== -->
-      <section class="error-section hidden" id="errorSection">
+      <section class="error-section hidden" id="errorSection" tabindex="-1" aria-labelledby="errorTitle">
         <div class="error-card">
           <div class="error-icon">
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -326,14 +343,17 @@
               <line x1="9" y1="9" x2="15" y2="15"/>
             </svg>
           </div>
-          <h3 class="error-title">处理失败</h3>
-          <p class="error-message" id="errorMessage">未知错误</p>
-          <button class="btn-reset" id="btnRetry">
+          <h2 class="error-title" id="errorTitle">处理失败</h2>
+          <p class="error-message" id="errorMessage" role="alert" aria-live="assertive" aria-atomic="true">未知错误</p>
+          <button class="btn-reset" id="btnRetry" type="button">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="1 4 1 10 7 10"/>
               <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
             </svg>
             <span id="retryLabel">重新上传</span>
+          </button>
+          <button class="btn-reset btn-discard-pending hidden" id="btnDiscardPending" type="button">
+            <span>放弃旧任务并继续</span>
           </button>
         </div>
       </section>
@@ -388,6 +408,6 @@
 
   </div>
 
-  <script src="/static/script.js?v=20260529_9"></script>
+  <script src="/static/script.js?v=20260912_1"></script>
 </body>
 </html>

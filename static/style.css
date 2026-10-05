@@ -29,8 +29,8 @@
   --border-hover: rgba(120, 160, 220, 0.3);
 
   --text-primary: #e8ecf4;
-  --text-secondary: #8b95b0;
-  --text-muted: #5a6480;
+  --text-secondary: #b5bdd0;
+  --text-muted: #a0aac0;
 
   /* 状态色 */
   --success: hsl(145, 65%, 48%);
@@ -56,9 +56,10 @@
   --radius-full: 9999px;
 
   /* 字体 */
-  --font-sans: 'Noto Sans SC', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   --font-mono: 'SF Mono', 'Fira Code', monospace;
-  --font-signature: 'Caveat', 'Segoe Script', cursive;
+  --font-signature: 'Segoe Script', 'Bradley Hand', 'Kaiti SC', cursive;
 
   /* 过渡 */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
@@ -276,6 +277,28 @@ body {
   background: linear-gradient(135deg, var(--primary), var(--primary-dark));
   color: white;
   box-shadow: 0 4px 15px var(--primary-glow);
+}
+
+.tab-btn:focus-visible,
+.upload-zone:focus-visible,
+.cover-zone:focus-visible,
+.concat-zone:focus-visible,
+.file-card:focus-visible,
+.cover-file:focus-visible,
+.concat-file:focus-visible,
+.file-remove:focus-visible,
+.cover-file-remove:focus-visible,
+.concat-file-remove:focus-visible,
+.btn-format:focus-visible,
+.btn-download:focus-visible,
+.btn-reset:focus-visible,
+.paste-area:focus-visible,
+.cover-field input:focus-visible,
+.concat-option input:focus-visible,
+.cover-builder-toggle input:focus-visible,
+.footer-github:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
 }
 
 /* ====== 黏贴文本区域 ====== */
@@ -599,6 +622,12 @@ body {
 }
 
 /* ====== 处理中动画 ====== */
+.processing-section,
+.result-section,
+.error-section {
+  scroll-margin-top: var(--space-lg);
+}
+
 .processing-section {
   width: 100%;
   animation: fadeInUp 0.5s var(--ease-out) both;
@@ -663,13 +692,54 @@ body {
   margin: 0 auto;
 }
 
+.processing-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-xl);
+}
+
+.processing-cancel {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.processing-cancel:hover {
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+}
+
+.processing-cancel-note {
+  max-width: 420px;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.55;
+}
+
 .step {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
+  width: 100%;
   font-size: 0.85rem;
   color: var(--text-muted);
   transition: color 0.3s ease;
+}
+
+.step-label {
+  min-width: 0;
+  flex: 1;
+}
+
+.step-status {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-full);
+  font-size: 0.68rem;
+  line-height: 1.4;
+  white-space: nowrap;
 }
 
 .step.active {
@@ -1167,6 +1237,18 @@ body {
   margin-bottom: var(--space-lg);
 }
 
+.concat-feature-hint {
+  margin-top: var(--space-sm);
+  margin-bottom: var(--space-sm);
+  padding: 10px var(--space-md);
+  border-radius: var(--radius-md);
+  border: 1px solid hsla(38, 92%, 55%, 0.35);
+  background: hsla(38, 92%, 55%, 0.12);
+  color: #ffe7a8;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
 .concat-tip strong {
   color: var(--primary-light);
 }
@@ -1315,6 +1397,11 @@ body {
   color: var(--text-secondary);
   margin-bottom: var(--space-xl);
   line-height: 1.6;
+}
+
+.btn-discard-pending {
+  margin-top: var(--space-sm);
+  color: var(--text-muted);
 }
 
 /* ====== 排版规则说明 ====== */
@@ -1536,6 +1623,19 @@ body {
 }
 
 /* ====== 工具类 ====== */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .hidden {
   display: none !important;
 }
@@ -1645,7 +1745,7 @@ body {
 
   .file-card {
     display: grid;
-    grid-template-columns: 44px minmax(0, 1fr) 32px;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
     align-items: start;
     padding: var(--space-md);
     border-radius: var(--radius-lg);
@@ -1670,9 +1770,11 @@ body {
     font-size: 0.75rem;
   }
 
-  .file-remove {
-    width: 32px;
-    height: 32px;
+  .file-remove,
+  .cover-file-remove,
+  .concat-file-remove {
+    width: 44px;
+    height: 44px;
   }
 
   .paste-area {
@@ -1697,6 +1799,10 @@ body {
     min-height: 46px;
     font-size: 0.88rem;
     justify-content: center;
+  }
+
+  .processing-cancel {
+    min-height: 44px;
   }
 
   .processing-card,
@@ -1982,6 +2088,51 @@ body {
   }
 }
 
+@media (max-width: 560px), (hover: none) and (pointer: coarse) {
+  .bg-particles {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .bg-particles::before {
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    animation: none;
+    transform: none;
+  }
+
+  .particle {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    scroll-behavior: auto !important;
+    transition: none !important;
+  }
+
+  body {
+    background-attachment: scroll;
+  }
+
+  .particle {
+    display: none !important;
+  }
+
+  .sign-name::after {
+    content: none;
+  }
+
+  .sign-name .sign-underline {
+    width: 100%;
+  }
+}
+
 @media (hover: none) and (pointer: coarse) {
   .school-logo-img:hover {
     transform: none;
@@ -2035,5 +2186,13 @@ body {
     color: var(--text-secondary);
     border-color: var(--border);
     background: transparent;
+  }
+}
+
+/* iOS Safari 会在聚焦小于 16px 的表单控件时强制放大页面。 */
+@media (max-width: 768px) {
+  .paste-area,
+  .cover-field input {
+    font-size: 16px;
   }
 }

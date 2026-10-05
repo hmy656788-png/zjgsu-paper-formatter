@@ -3249,6 +3249,17 @@ def complete_output_storage_reservation(output_path: Path, actual_size: int) -> 
             ACTIVE_OUTPUT_RESERVATIONS[output_path] = max(0, int(actual_size))
 
 
+def _output_stat_fingerprint(metadata: os.stat_result) -> tuple:
+    """用于判断 stat 与 open 之间文件是否被替换的身份指纹。"""
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
 def acquire_output_download_lease(output_path: Path):
     """安全打开并租用一个输出，返回（幂等释放函数、文件流、文件大小）。"""
     output_path = Path(output_path)
@@ -3288,8 +3299,12 @@ def acquire_output_download_lease(output_path: Path):
             opened_metadata = os.fstat(fd)
             if (
                 not stat.S_ISREG(opened_metadata.st_mode)
-                or (opened_metadata.st_dev, opened_metadata.st_ino)
-                != (path_metadata.st_dev, path_metadata.st_ino)
+                # Linux filesystems (ext4/tmpfs) may hand a just-freed inode
+                # number to the next file created, so (dev, ino) alone cannot
+                # detect an unlink-and-recreate swap between stat and open.
+                # Size and nanosecond timestamps complete the fingerprint.
+                or _output_stat_fingerprint(opened_metadata)
+                != _output_stat_fingerprint(path_metadata)
                 # Generated outputs must own their inode. A hard link could
                 # otherwise make cleanup of an output affect an unrelated
                 # file that happens to be linkable in this folder.

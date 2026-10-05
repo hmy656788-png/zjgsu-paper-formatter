@@ -1,10 +1,28 @@
 venv/
+.venv/
+.venv-*/
+python_modules/
 __pycache__/
 *.pyc
+.ruff_cache/
+.pytest_cache/
 uploads/
 outputs/
 .DS_Store
 *.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+.env
+.env.*
+!.env.example
 .vercel
 .vscode/
+.claude/
 AGENTS.md
+
+# Wrangler 本地缓存（含 Cloudflare 账户信息），不应入库
+.wrangler/
+
+# 独立的实验项目，不属于本仓库
+bookskills-demo/

@@ -9,9 +9,82 @@ on:
     - cron: "*/5 * * * *"   # 每 5 分钟（GitHub 计划任务最小间隔）
   workflow_dispatch: {}      # 支持手动触发
 
+permissions: {}
+
+concurrency:
+  group: keep-render-warm
+  cancel-in-progress: true
+
 jobs:
   ping:
     runs-on: ubuntu-latest
+    # KEEPWARM_MAX_TIME may be 120s and KEEPWARM_RETRY_COUNT may be 5.
+    # Leave enough wall-clock time for six attempts plus five 30s backoffs;
+    # otherwise a valid configuration can be killed by Actions mid-request.
+    timeout-minutes: 15
     steps:
       - name: Ping Render health endpoint
-        run: curl -fsS -m 30 https://zjgsu-paper-formatter.onrender.com/api/health || true
+        env:
+          KEEPWARM_TARGET_URL: ${{ vars.KEEPWARM_TARGET_URL || 'https://zjgsu-paper-formatter.onrender.com/api/health' }}
+          KEEPWARM_CONNECT_TIMEOUT: ${{ vars.KEEPWARM_CONNECT_TIMEOUT || '10' }}
+          KEEPWARM_MAX_TIME: ${{ vars.KEEPWARM_MAX_TIME || '40' }}
+          KEEPWARM_RETRY_COUNT: ${{ vars.KEEPWARM_RETRY_COUNT || '2' }}
+          KEEPWARM_RETRY_DELAY: ${{ vars.KEEPWARM_RETRY_DELAY || '5' }}
+        run: |
+          set -euo pipefail
+          target_url="${KEEPWARM_TARGET_URL}"; \
+          target_default="https://zjgsu-paper-formatter.onrender.com/api/health"; \
+          connect_timeout="${KEEPWARM_CONNECT_TIMEOUT}"; \
+          max_time="${KEEPWARM_MAX_TIME}"; \
+          retry_count="${KEEPWARM_RETRY_COUNT}"; \
+          retry_delay="${KEEPWARM_RETRY_DELAY}"; \
+          is_invalid_numeric=0; \
+          is_invalid_target=0; \
+          [[ "$connect_timeout" =~ ^[0-9]+$ ]] || { connect_timeout=10; is_invalid_numeric=1; }; \
+          [[ "$max_time" =~ ^[0-9]+$ ]] || { max_time=40; is_invalid_numeric=1; }; \
+          [[ "$retry_count" =~ ^[0-9]+$ ]] || { retry_count=2; is_invalid_numeric=1; }; \
+          [[ "$retry_delay" =~ ^[0-9]+$ ]] || { retry_delay=5; is_invalid_numeric=1; }; \
+          # Match a non-empty host and reject userinfo.  A scheme-only check
+          # lets values such as `https:///api/health` or
+          # `https://user:password@example/health` through to curl, which
+          # either fails late or risks exposing credentials in diagnostics.
+          if [[ ! "$target_url" =~ ^https?://[^/@[:space:]]+(/[^[:space:]]*)?$ ]]; then \
+            target_url="$target_default"; \
+            is_invalid_target=1; \
+          fi; \
+          if (( connect_timeout < 1 )); then \
+            connect_timeout=10; \
+          fi; \
+          if (( connect_timeout > 60 )); then \
+            connect_timeout=60; is_invalid_numeric=1; \
+          fi; \
+          if (( max_time < 1 )); then \
+            max_time=40; \
+          fi; \
+          if (( max_time > 120 )); then \
+            max_time=120; is_invalid_numeric=1; \
+          fi; \
+          if (( retry_count < 0 )); then \
+            retry_count=0; \
+          fi; \
+          if (( retry_count > 5 )); then \
+            retry_count=5; is_invalid_numeric=1; \
+          fi; \
+          if (( retry_delay < 1 )); then \
+            retry_delay=1; \
+          fi; \
+          if (( retry_delay > 30 )); then \
+            retry_delay=30; is_invalid_numeric=1; \
+          fi; \
+          if (( max_time < connect_timeout )); then \
+            max_time=$((connect_timeout + 1)); \
+          fi; \
+          if (( is_invalid_numeric == 1 || is_invalid_target == 1 )); then \
+            echo "keepalive config invalid, normalized to safe defaults/bounds."; \
+          fi; \
+          curl_cmd=(
+            curl --fail --show-error --silent
+            --connect-timeout "$connect_timeout" --max-time "$max_time"
+            --retry "$retry_count" --retry-delay "$retry_delay" --retry-all-errors
+          )
+          "${curl_cmd[@]}" "${target_url}" > /dev/null

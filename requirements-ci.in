@@ -1,0 +1,2 @@
+# CI-only tooling. Keep production dependencies in requirements.in.
+coverage[toml]>=7.15.4,<8

@@ -10,9 +10,19 @@ services:
     name: zjgsu-paper-formatter
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --workers 1 --threads 8 --timeout 300 --bind 0.0.0.0:$PORT
+    autoDeployTrigger: off
+    buildCommand: "python -m pip install --only-binary=:all: --require-hashes -r requirements.txt"
+    startCommand: gunicorn app:app --config gunicorn_config.py --workers 1 --threads 8 --timeout 300 --graceful-timeout 290 --bind 0.0.0.0:$PORT
+    maxShutdownDelaySeconds: 300
     healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION
-        value: 3.12.7
+        value: 3.12.13
+      - key: MAX_CONCURRENT_PROCESSING_JOBS
+        value: "2"
+      - key: MAX_CONCURRENT_SSE_CONNECTIONS
+        value: "4"
+      - key: REQUEST_HEADER_TIMEOUT_SECONDS
+        value: "10"
+      - key: REQUEST_BODY_TIMEOUT_SECONDS
+        value: "300"
